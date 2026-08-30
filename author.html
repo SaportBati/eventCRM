@@ -34,7 +34,6 @@
   </nav>
 
   <div class="status-row">
-    <span class="pill"><span class="dot" id="statusDot"></span><span id="statusText">не подключено</span></span>
     <button class="btn primary" id="refreshBtn" style="display:none;">↻ Обновить</button>
   </div>
 </header>
@@ -120,6 +119,12 @@
     </linearGradient>
   </defs>
 </svg>
+<div class="lightbox" id="lightbox">
+  <div class="lightbox-frame">
+    <button class="lightbox-close" id="lightboxClose" aria-label="Закрыть">✕</button>
+    <img id="lightboxImg" src="" alt="Скан крупным планом">
+  </div>
+</div>
 
 <script>
 (function(){
@@ -173,8 +178,8 @@
   // ---------------- status / gate ----------------
   function setStatus(state, text){
     const dot = $('statusDot'), label = $('statusText');
-    dot.className = 'dot' + (state === 'live' ? ' live' : state === 'err' ? ' err' : '');
-    label.textContent = text;
+    if(dot) dot.className = 'dot' + (state === 'live' ? ' live' : state === 'err' ? ' err' : '');
+    if(label) label.textContent = text;
   }
 
   function showError(msg){
@@ -294,6 +299,38 @@
   }
 
   function playerName(p){ return typeof p === 'string' ? p : (p && (p.name||p.player)) || JSON.stringify(p); }
+
+  function renderScanThumb(s){
+    const url = typeof s === 'string' ? s : (s && s.url) || '';
+    const time = (s && typeof s === 'object' && s.time) ? s.time : '';
+    if(!url){ return `<span class="tag">${escapeHtml(JSON.stringify(s))}</span>`; }
+    return `<div class="scan-thumb" data-url="${escapeAttr(url)}" title="Открыть крупнее">
+      <img src="${escapeAttr(url)}" alt="Скан" loading="lazy">
+      <span class="scan-zoom">⤢</span>
+      ${time ? `<span class="scan-time">${escapeHtml(time)}</span>` : ''}
+    </div>`;
+  }
+
+  // ---------------- lightbox ----------------
+  const lightbox = $('lightbox'), lightboxImg = $('lightboxImg');
+  function openLightbox(url){
+    lightboxImg.src = url;
+    lightbox.classList.add('open');
+    document.body.style.overflow = 'hidden';
+  }
+  function closeLightbox(){
+    lightbox.classList.remove('open');
+    document.body.style.overflow = '';
+  }
+  if(lightbox){
+    $('lightboxClose').addEventListener('click', closeLightbox);
+    lightbox.addEventListener('click', (e) => { if(e.target === lightbox) closeLightbox(); });
+    document.addEventListener('keydown', (e) => { if(e.key === 'Escape') closeLightbox(); });
+    document.addEventListener('click', (e) => {
+      const thumb = e.target.closest('.scan-thumb');
+      if(thumb) openLightbox(thumb.dataset.url);
+    });
+  }
 
   function authorStats(name){
     const mine = allReports.filter(r => (r.author && r.author.trim() ? r.author.trim() : '—') === name);
@@ -421,7 +458,7 @@
             </div>
             <div class="detail-col">
               <h4>Сканы (${r.scansArr.length})</h4>
-              ${r.scansArr.length ? `<div class="tag-list">${r.scansArr.map(s => `<span class="tag">${escapeHtml(typeof s === 'string' ? s : JSON.stringify(s))}</span>`).join('')}</div>` : '<div class="empty-hint">нет данных</div>'}
+              ${r.scansArr.length ? `<div class="scan-grid">${r.scansArr.map(s => renderScanThumb(s)).join('')}</div>` : '<div class="empty-hint">нет данных</div>'}
             </div>
           </div>
         </td>
