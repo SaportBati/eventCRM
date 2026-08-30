@@ -286,5 +286,9 @@ tbody tr.report-row.expanded td:first-child{ border-left-color: var(--teal); }
 .hero-stat .value{ font-family:'Cinzel',serif; font-size:20px; color: var(--text); }
 .hero-stat .value.gold{ color: var(--gold-bright); }
 .hero-stat .value.teal{ color: var(--teal-bright); }
+.hero-stat .value.crimson{ color: var(--crimson); }
+
+.balance-pos{ color: var(--teal-bright); }
+.balance-neg{ color: var(--crimson); }
 
 .empty-authors{ text-align:center; padding:70px 20px; color:var(--text-faint); border:1px dashed var(--border); border-radius: var(--radius); }
