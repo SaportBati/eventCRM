@@ -122,9 +122,8 @@
 <script>
 (function(){
   const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
-  const DEDUCTION_PER_REPORT = 50000000; // списывается с баланса автора за каждый отчёт
   let allReports = [];
-  let balancesMap = new Map(); // author -> raw balance from D1 (до вычета за отчёты)
+  let balancesMap = new Map(); // author -> итоговый баланс из D1 (уже с учётом списаний за отчёты)
   let charts = {};
 
   const $ = (id) => document.getElementById(id);
@@ -275,9 +274,8 @@
       return weekReports.filter(r => reportDateStr(r) === ds).length;
     });
     const lastDate = mine.reduce((m,r) => { const ds = reportDateStr(r); return ds > m ? ds : m; }, '');
-    const rawBalance = balancesMap.get(name) || 0;
-    const balance = rawBalance - mine.length * DEDUCTION_PER_REPORT;
-    return { name, total: mine.length, week: weekReports.length, totalPlayers, favoriteEvent, dailyWeek, lastDate, list: mine, rawBalance, balance };
+    const balance = balancesMap.get(name) || 0; // уже готовое значение из D1
+    return { name, total: mine.length, week: weekReports.length, totalPlayers, favoriteEvent, dailyWeek, lastDate, list: mine, balance };
   }
 
   function allAuthorNames(){
