@@ -8,14 +8,16 @@
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
 <script>
-  // Подстраховка: если cdnjs не ответил, подгружаем Chart.js с jsDelivr.
   if (typeof Chart === 'undefined') {
     document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\/script>');
   }
 </script>
 </head>
 <body>
+
+<div class="aurora" aria-hidden="true"><span class="b1"></span><span class="b2"></span><span class="b3"></span></div>
 
 <header>
   <div class="brand">
@@ -49,11 +51,11 @@
 
     <!-- ============ AUTHORS VIEW ============ -->
     <section id="view-authors" style="display:none;">
-      <div class="section-head">
+      <div class="section-head js-reveal">
         <div><span class="eyebrow">Печати гильдии</span><h2>Авторы отчётов</h2></div>
       </div>
-      <div class="authors-toolbar">
-        <input type="text" id="authorsSearch" placeholder="Поиск автора…" style="width:260px; background:var(--panel-2); border:1px solid var(--border); color:var(--text); padding:10px 14px; border-radius:999px; font-size:12.5px; outline:none;">
+      <div class="authors-toolbar js-reveal">
+        <input type="text" id="authorsSearch" placeholder="Поиск автора…" style="width:260px; background:rgba(255,255,255,.03); border:1px solid var(--border); color:var(--text); padding:11px 15px; border-radius:999px; font-size:12.5px; outline:none;">
         <span class="pill" id="weekRangeLabel">неделя: —</span>
       </div>
       <div class="authors-grid" id="authorsGrid"></div>
@@ -64,7 +66,7 @@
     <section id="view-author-detail" style="display:none;">
       <button class="back-link" id="backToAuthors">← Все авторы</button>
 
-      <div class="author-hero">
+      <div class="glass author-hero js-reveal">
         <div class="seal-ring-wrap" id="heroRingWrap"></div>
         <div>
           <h2 id="authorName">—</h2>
@@ -79,17 +81,17 @@
         </div>
       </div>
 
-      <div class="charts-row2">
-        <div class="panel">
+      <div class="bento">
+        <div class="glass panel b-12 js-reveal">
           <div class="panel-title"><span><span class="tick"></span>Активность автора по датам</span></div>
           <div class="chart-wrap short"><canvas id="chartAuthorTimeline"></canvas></div>
         </div>
       </div>
 
-      <div class="table-header">
+      <div class="table-header js-reveal">
         <h3>Отчёты автора</h3>
       </div>
-      <div class="table-scroll">
+      <div class="table-scroll js-reveal">
         <table>
           <thead>
             <tr>
@@ -122,11 +124,51 @@
 <script>
 (function(){
   const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
+  const DEDUCTION_PER_REPORT = 50000000; // списывается с баланса автора за каждый отчёт
   let allReports = [];
-  let balancesMap = new Map(); // author -> итоговый баланс из D1 (уже с учётом списаний за отчёты)
+  let balancesMap = new Map(); // author -> raw balance from D1 (до вычета за отчёты)
   let charts = {};
+  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const hasGsap = typeof gsap !== 'undefined';
 
   const $ = (id) => document.getElementById(id);
+
+  // ---------------- motion helpers ----------------
+  function revealStagger(selectorOrEls, opts){
+    if(!hasGsap || reduceMotion) return;
+    const els = typeof selectorOrEls === 'string' ? document.querySelectorAll(selectorOrEls) : selectorOrEls;
+    if(!els || !els.length) return;
+    gsap.fromTo(els, { opacity:0, y: 22 }, Object.assign({
+      opacity:1, y:0, duration:.7, ease:'power3.out', stagger:.06, clearProps:'transform'
+    }, opts||{}));
+  }
+  function countUp(el, target, opts){
+    if(!el) return;
+    const isFloat = opts && opts.decimals;
+    if(!hasGsap || reduceMotion){
+      el.textContent = isFloat ? Number(target).toFixed(isFloat) : Math.round(target).toLocaleString('ru-RU');
+      return;
+    }
+    const obj = { v: 0 };
+    gsap.to(obj, {
+      v: target, duration: 1.1, ease:'power2.out', delay: (opts && opts.delay)||0,
+      onUpdate(){ el.textContent = isFloat ? obj.v.toFixed(isFloat) : Math.round(obj.v).toLocaleString('ru-RU'); }
+    });
+  }
+  function magnetTilt(cardSelector){
+    if(reduceMotion || !hasGsap) return;
+    document.querySelectorAll(cardSelector).forEach(card => {
+      card.addEventListener('mousemove', (e) => {
+        const r = card.getBoundingClientRect();
+        const x = (e.clientX - r.left) / r.width - 0.5;
+        const y = (e.clientY - r.top) / r.height - 0.5;
+        gsap.to(card, { rotateX: y * -3.5, rotateY: x * 3.5, duration: .4, ease:'power2.out', transformPerspective: 700 });
+      });
+      card.addEventListener('mouseleave', () => {
+        gsap.to(card, { rotateX: 0, rotateY: 0, duration: .5, ease:'power3.out' });
+      });
+    });
+  }
 
   // ---------------- status / gate ----------------
   function setStatus(state, text){
@@ -212,13 +254,10 @@
   function normalizeDateStr(s){
     if(!s) return '';
     s = String(s).trim();
-    // already ISO: 2026-08-30
     let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
     if(m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
-    // DD.MM.YYYY (e.g. 30.08.2026)
     m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
     if(m) return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
-    // DD/MM/YYYY
     m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
     if(m) return `${m[3]}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
     const d = new Date(s);
@@ -229,7 +268,7 @@
   }
   function getWeekStart(ref = new Date()){
     const d = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate());
-    const day = d.getDay(); // 0=Sun..6=Sat
+    const day = d.getDay();
     const diff = day === 0 ? -6 : 1 - day;
     d.setDate(d.getDate() + diff);
     return d;
@@ -274,8 +313,9 @@
       return weekReports.filter(r => reportDateStr(r) === ds).length;
     });
     const lastDate = mine.reduce((m,r) => { const ds = reportDateStr(r); return ds > m ? ds : m; }, '');
-    const balance = balancesMap.get(name) || 0; // уже готовое значение из D1
-    return { name, total: mine.length, week: weekReports.length, totalPlayers, favoriteEvent, dailyWeek, lastDate, list: mine, balance };
+    const rawBalance = balancesMap.get(name) || 0;
+    const balance = rawBalance - mine.length * DEDUCTION_PER_REPORT;
+    return { name, total: mine.length, week: weekReports.length, totalPlayers, favoriteEvent, dailyWeek, lastDate, list: mine, rawBalance, balance };
   }
 
   function allAuthorNames(){
@@ -313,12 +353,20 @@
       <svg class="seal-ring" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
         <circle class="track" cx="${size/2}" cy="${size/2}" r="${r}" stroke-width="${strokeWidth}"></circle>
         <circle class="prog" cx="${size/2}" cy="${size/2}" r="${r}" stroke-width="${strokeWidth}"
-          stroke-dasharray="${c}" stroke-dashoffset="${off}"></circle>
+          stroke-dasharray="${c}" stroke-dashoffset="${c}"></circle>
       </svg>
       <div class="seal-ring-num" style="flex-direction:column; line-height:1;">
         <div style="font-size:${size*0.28}px;">${centerLabel}</div>
         ${subLabel ? `<div style="font-size:9px; font-weight:500; color:var(--text-faint); letter-spacing:.4px; margin-top:2px;">${subLabel}</div>` : ''}
       </div>`;
+  }
+  function animateSealRing(wrapEl, size, strokeWidth, fraction){
+    const r = (size - strokeWidth) / 2;
+    const c = 2 * Math.PI * r;
+    const off = c * (1 - Math.max(0, Math.min(1, fraction)));
+    const prog = wrapEl.querySelector('.prog');
+    if(!prog) return;
+    requestAnimationFrame(() => { prog.style.strokeDashoffset = off; });
   }
 
   function chartTheme(){
@@ -385,10 +433,19 @@
         const idx = row.getAttribute('data-idx');
         const detail = tbodyEl.querySelector(`[data-detail="${idx}"]`);
         const isOpen = detail.style.display !== 'none';
-        detail.style.display = isOpen ? 'none' : 'table-row';
+        if(!isOpen){
+          detail.style.display = 'table-row';
+          if(hasGsap && !reduceMotion){
+            gsap.fromTo(detail.querySelector('.detail-inner'), { opacity:0, y:-6 }, { opacity:1, y:0, duration:.35, ease:'power2.out' });
+          }
+        } else {
+          detail.style.display = 'none';
+        }
         row.classList.toggle('expanded', !isOpen);
       });
     });
+
+    revealStagger(tbodyEl.querySelectorAll('.report-row'), { duration:.45, stagger:.025, y:12 });
   }
 
   // ---------------- authors grid render ----------------
@@ -402,7 +459,9 @@
     const maxWeek = Math.max(1, ...stats.map(s => s.week));
 
     $('authorsEmpty').style.display = stats.length ? 'none' : 'block';
-    $('authorsGrid').innerHTML = stats.map(s => {
+    $('authorsGrid').innerHTML = stats.map((s, idx) => {
+      const isLeader = idx === 0 && s.week > 0 && !q;
+      const ringSize = isLeader ? 78 : 58;
       const initials = s.name === '—' ? '?' : s.name.slice(0,2).toUpperCase();
       const todayIdx = (() => { const d = new Date().getDay(); return d === 0 ? 6 : d-1; })();
       const bars = s.dailyWeek.map((v, i) => {
@@ -410,12 +469,13 @@
         return `<div class="bar ${v>0?'hit':''} ${i===todayIdx?'today':''}" style="height:${h}%;" title="${weekDayLabels()[i]}: ${v}"></div>`;
       }).join('');
       return `
-      <button class="author-card" data-author="${escapeAttr(s.name)}">
+      <button class="glass author-card js-reveal ${isLeader ? 'leader' : ''}" data-author="${escapeAttr(s.name)}" data-week="${s.week}" data-max="${maxWeek}" data-ring="${ringSize}">
         <div class="top-row">
-          <div class="seal-ring-wrap" style="width:58px;height:58px;">
-            ${sealRingSVG(58, 6, s.week/maxWeek, s.week, 'МП')}
+          <div class="seal-ring-wrap" style="width:${ringSize}px;height:${ringSize}px;">
+            ${sealRingSVG(ringSize, isLeader ? 7 : 6, s.week/maxWeek, s.week, 'МП')}
           </div>
           <div>
+            ${isLeader ? '<div class="leader-tag">★ Лидер недели</div>' : ''}
             <div class="author-name">${escapeHtml(s.name)}</div>
             <div class="author-sub">${initials} · всего отчётов: ${s.total}</div>
           </div>
@@ -433,7 +493,11 @@
 
     $('authorsGrid').querySelectorAll('.author-card').forEach(card => {
       card.addEventListener('click', () => navigate('author', card.dataset.author));
+      const wrap = card.querySelector('.seal-ring-wrap');
+      animateSealRing(wrap, Number(card.dataset.ring), card.dataset.ring == '78' ? 7 : 6, Number(card.dataset.week)/Number(card.dataset.max || 1));
     });
+    magnetTilt('.author-card');
+    revealStagger('#authorsGrid .author-card', { stagger: .05, y: 26 });
   }
   $('authorsSearch').addEventListener('input', renderAuthorsGrid);
 
@@ -444,18 +508,24 @@
 
     $('authorName').textContent = s.name;
     $('authorSub').textContent = `Последний отчёт: ${s.lastDate || '—'}`;
-    $('statWeek').textContent = s.week;
-    $('statTotal').textContent = s.total;
-    $('statPlayers').textContent = s.totalPlayers;
+    countUp($('statWeek'), s.week);
+    countUp($('statTotal'), s.total, { delay: .05 });
+    countUp($('statPlayers'), s.totalPlayers, { delay: .1 });
     $('statFav').textContent = s.favoriteEvent || '—';
     const balEl = $('statBalance');
-    balEl.textContent = fmtMoney(s.balance);
     balEl.classList.remove('gold','teal','crimson');
     balEl.classList.add(s.balance < 0 ? 'crimson' : 'gold');
+    if(!hasGsap || reduceMotion){
+      balEl.textContent = fmtMoney(s.balance);
+    } else {
+      const obj = { v: 0 };
+      gsap.to(obj, { v: s.balance, duration: 1.2, delay:.15, ease:'power2.out', onUpdate(){ balEl.textContent = fmtMoney(Math.round(obj.v)); } });
+    }
 
     $('heroRingWrap').style.width = '96px';
     $('heroRingWrap').style.height = '96px';
     $('heroRingWrap').innerHTML = sealRingSVG(96, 8, s.week/maxWeek, s.week, 'МП / нед.');
+    animateSealRing($('heroRingWrap'), 96, 8, s.week/maxWeek);
 
     // timeline chart for this author
     if(typeof Chart !== 'undefined'){
@@ -487,6 +557,7 @@
     }
 
     renderReportsTable(s.list.slice().sort((a,b) => (b.created_at||'') < (a.created_at||'') ? -1 : 1), $('authorTableBody'), $('authorEmptyState'));
+    revealStagger('.js-reveal', { stagger: .06 });
   }
 
   // ---------------- init ----------------

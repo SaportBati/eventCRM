@@ -8,14 +8,16 @@
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
 <script>
-  // Подстраховка: если cdnjs не ответил, подгружаем Chart.js с jsDelivr.
   if (typeof Chart === 'undefined') {
     document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\/script>');
   }
 </script>
 </head>
 <body>
+
+<div class="aurora" aria-hidden="true"><span class="b1"></span><span class="b2"></span><span class="b3"></span></div>
 
 <header>
   <div class="brand">
@@ -49,27 +51,28 @@
 
     <section id="view-dashboard">
 
-      <div class="stats" id="stats"></div>
+      <div class="section-head js-reveal">
+        <div><span class="eyebrow">Ведомость гильдии</span><h2>Обзор событий</h2></div>
+      </div>
 
-      <div class="charts">
-        <div class="panel">
+      <div class="bento" id="statsBento"></div>
+
+      <div class="bento">
+        <div class="glass panel b-8 js-reveal">
           <div class="panel-title"><span><span class="tick"></span>Отчёты по времени</span></div>
           <div class="chart-wrap"><canvas id="chartTime"></canvas></div>
         </div>
-        <div class="panel">
+        <div class="glass panel b-4 accent-gold js-reveal">
           <div class="panel-title"><span><span class="tick"></span>По авторам</span></div>
           <div class="chart-wrap"><canvas id="chartAuthors"></canvas></div>
         </div>
-      </div>
-
-      <div class="charts-row2">
-        <div class="panel">
+        <div class="glass panel b-12 js-reveal">
           <div class="panel-title"><span><span class="tick"></span>Посещаемость — топ участников</span></div>
           <div class="chart-wrap short"><canvas id="chartPlayers"></canvas></div>
         </div>
       </div>
 
-      <div class="table-header">
+      <div class="table-header js-reveal">
         <h3>Все отчёты</h3>
         <div class="controls">
           <input type="text" id="searchInput" placeholder="Поиск: событие, автор, победитель…">
@@ -81,7 +84,7 @@
         </div>
       </div>
 
-      <div class="table-scroll">
+      <div class="table-scroll js-reveal">
         <table>
           <thead>
             <tr>
@@ -109,8 +112,49 @@
   const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
   let allReports = [];
   let charts = {};
+  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const hasGsap = typeof gsap !== 'undefined';
 
   const $ = (id) => document.getElementById(id);
+
+  // ---------------- motion helpers ----------------
+  function revealStagger(selectorOrEls, opts){
+    if(!hasGsap || reduceMotion) return;
+    const els = typeof selectorOrEls === 'string' ? document.querySelectorAll(selectorOrEls) : selectorOrEls;
+    if(!els || !els.length) return;
+    gsap.fromTo(els, { opacity:0, y: 22 }, Object.assign({
+      opacity:1, y:0, duration:.7, ease:'power3.out', stagger:.06, clearProps:'transform'
+    }, opts||{}));
+  }
+  function countUp(el, target, opts){
+    if(!el) return;
+    const isFloat = opts && opts.decimals;
+    if(!hasGsap || reduceMotion){
+      el.textContent = isFloat ? Number(target).toFixed(isFloat) : Math.round(target).toLocaleString('ru-RU');
+      return;
+    }
+    const obj = { v: 0 };
+    gsap.to(obj, {
+      v: target, duration: 1.3, ease:'power2.out', delay: (opts && opts.delay)||0,
+      onUpdate(){ el.textContent = isFloat ? obj.v.toFixed(isFloat) : Math.round(obj.v).toLocaleString('ru-RU'); }
+    });
+  }
+  function magnetTilt(cardSelector){
+    if(reduceMotion) return;
+    document.querySelectorAll(cardSelector).forEach(card => {
+      card.addEventListener('mousemove', (e) => {
+        const r = card.getBoundingClientRect();
+        const x = (e.clientX - r.left) / r.width - 0.5;
+        const y = (e.clientY - r.top) / r.height - 0.5;
+        if(hasGsap){
+          gsap.to(card, { rotateX: y * -4, rotateY: x * 4, duration: .4, ease:'power2.out', transformPerspective: 700 });
+        }
+      });
+      card.addEventListener('mouseleave', () => {
+        if(hasGsap) gsap.to(card, { rotateX: 0, rotateY: 0, duration: .5, ease:'power3.out' });
+      });
+    });
+  }
 
   // ---------------- status / gate ----------------
   function setStatus(state, text){
@@ -175,13 +219,10 @@
   function normalizeDateStr(s){
     if(!s) return '';
     s = String(s).trim();
-    // already ISO: 2026-08-30
     let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
     if(m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
-    // DD.MM.YYYY (e.g. 30.08.2026)
     m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
     if(m) return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
-    // DD/MM/YYYY
     m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
     if(m) return `${m[3]}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
     const d = new Date(s);
@@ -262,25 +303,35 @@
     const playersAll = new Set();
     let sumPlayers = 0;
     allReports.forEach(r => { r.playersArr.forEach(p => playersAll.add(playerName(p))); sumPlayers += r.playersArr.length; });
-    const avgAttendance = total ? (sumPlayers/total).toFixed(1) : '0';
+    const avgAttendance = total ? (sumPlayers/total) : 0;
     const last = allReports.length ? allReports.reduce((m,r) => (r.created_at||'') > (m||'') ? r.created_at : m, '') : null;
 
-    const cards = [
-      { label: 'Всего отчётов', value: total, unit: '', accent:'' },
-      { label: 'Авторов', value: authors, unit: '', accent:'gold' },
-      { label: 'Уник. участников', value: playersAll.size, unit: '', accent:'teal' },
-      { label: 'Средняя посещаемость', value: avgAttendance, unit: 'чел/отчёт', accent:'' },
-    ];
-    $('stats').innerHTML = cards.map(c => `
-      <div class="stat-card ${c.accent ? 'accent-'+c.accent : ''}">
-        <div class="label">${c.label}</div>
-        <div class="value">${c.value}${c.unit ? `<span class="unit">${c.unit}</span>` : ''}</div>
+    $('statsBento').innerHTML = `
+      <div class="glass stat-card b-4 js-reveal">
+        <div class="label">Всего отчётов</div>
+        <div class="value" id="statTotal">0</div>
       </div>
-    `).join('') + `
-      <div class="stat-card" style="grid-column: 1 / -1;">
-        <div class="label">Последний отчёт</div>
-        <div class="value" style="font-size:15px; font-family:'JetBrains Mono',monospace; color:var(--text-dim);">${last ? escapeHtml(last) : '—'}</div>
+      <div class="glass stat-card accent-gold b-3 js-reveal">
+        <div class="label">Авторов</div>
+        <div class="value" id="statAuthors">0</div>
+      </div>
+      <div class="glass stat-card accent-teal b-3 js-reveal">
+        <div class="label">Уник. участников</div>
+        <div class="value" id="statPlayers">0</div>
+      </div>
+      <div class="glass stat-card b-2 js-reveal">
+        <div class="label">Ср. посещаемость</div>
+        <div class="value" style="font-size:clamp(22px,3vw,32px);"><span id="statAvg">0</span><span class="unit">чел</span></div>
+      </div>
+      <div class="glass stat-card b-12 js-reveal" style="flex-direction:row; align-items:center; gap:16px; min-height:auto; padding:18px 24px;">
+        <div class="label" style="margin-bottom:0;">Последний отчёт</div>
+        <div class="value mono-small">${last ? escapeHtml(last) : '—'}</div>
       </div>`;
+
+    countUp($('statTotal'), total, { delay: 0 });
+    countUp($('statAuthors'), authors, { delay: .06 });
+    countUp($('statPlayers'), playersAll.size, { delay: .12 });
+    countUp($('statAvg'), avgAttendance, { decimals: 1, delay: .18 });
   }
 
   function chartTheme(){
@@ -440,7 +491,14 @@
         const idx = row.getAttribute('data-idx');
         const detail = tbodyEl.querySelector(`[data-detail="${idx}"]`);
         const isOpen = detail.style.display !== 'none';
-        detail.style.display = isOpen ? 'none' : 'table-row';
+        if(!isOpen){
+          detail.style.display = 'table-row';
+          if(hasGsap && !reduceMotion){
+            gsap.fromTo(detail.querySelector('.detail-inner'), { opacity:0, y:-6 }, { opacity:1, y:0, duration:.35, ease:'power2.out' });
+          }
+        } else {
+          detail.style.display = 'none';
+        }
         row.classList.toggle('expanded', !isOpen);
       });
     });
@@ -449,12 +507,15 @@
         location.href = 'author.html#/author/' + encodeURIComponent(chip.dataset.author);
       });
     });
+
+    revealStagger(tbodyEl.querySelectorAll('.report-row'), { duration:.45, stagger:.025, y:12 });
   }
 
   function renderDashboard(){
     renderStats();
     renderCharts();
     renderReportsTable(getFiltered(), $('tableBody'), $('emptyState'));
+    revealStagger('.js-reveal', { stagger: .07 });
   }
 
   $('searchInput').addEventListener('input', () => renderReportsTable(getFiltered(), $('tableBody'), $('emptyState')));
