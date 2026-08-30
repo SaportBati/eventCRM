@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EventScan · Авторы</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+  // Подстраховка: если cdnjs не ответил, подгружаем Chart.js с jsDelivr.
+  if (typeof Chart === 'undefined') {
+    document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\/script>');
+  }
+</script>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="seal"><span>ES</span></div>
+    <div class="brand-copy">
+      <h1>EventScan</h1>
+      <div class="subtitle">Журнал отчётов о событиях гильдии</div>
+    </div>
+  </div>
+
+  <nav class="nav-tabs">
+    <a href="index.html">Дашборд</a>
+    <a href="author.html" class="active">Авторы</a>
+  </nav>
+
+  <div class="status-row">
+    <span class="pill"><span class="dot" id="statusDot"></span><span id="statusText">не подключено</span></span>
+    <button class="btn primary" id="refreshBtn" style="display:none;">↻ Обновить</button>
+  </div>
+</header>
+
+<main>
+
+  <div id="gateErrorWrap"></div>
+  <div class="loading" id="loadingState">
+    <div class="spinner"></div>
+    Загружаем отчёты…
+  </div>
+
+  <div id="app">
+
+    <!-- ============ AUTHORS VIEW ============ -->
+    <section id="view-authors" style="display:none;">
+      <div class="section-head">
+        <div><span class="eyebrow">Печати гильдии</span><h2>Авторы отчётов</h2></div>
+      </div>
+      <div class="authors-toolbar">
+        <input type="text" id="authorsSearch" placeholder="Поиск автора…" style="width:260px; background:var(--panel-2); border:1px solid var(--border); color:var(--text); padding:10px 14px; border-radius:999px; font-size:12.5px; outline:none;">
+        <span class="pill" id="weekRangeLabel">неделя: —</span>
+      </div>
+      <div class="authors-grid" id="authorsGrid"></div>
+      <div class="empty-authors" id="authorsEmpty" style="display:none;">Авторов пока не найдено.</div>
+    </section>
+
+    <!-- ============ AUTHOR DETAIL VIEW ============ -->
+    <section id="view-author-detail" style="display:none;">
+      <button class="back-link" id="backToAuthors">← Все авторы</button>
+
+      <div class="author-hero">
+        <div class="seal-ring-wrap" id="heroRingWrap"></div>
+        <div>
+          <h2 id="authorName">—</h2>
+          <div class="sub" id="authorSub">—</div>
+        </div>
+        <div class="hero-stats">
+          <div class="hero-stat"><div class="label">МП за неделю</div><div class="value gold" id="statWeek">0</div></div>
+          <div class="hero-stat"><div class="label">Всего отчётов</div><div class="value" id="statTotal">0</div></div>
+          <div class="hero-stat"><div class="label">Участников собрано</div><div class="value teal" id="statPlayers">0</div></div>
+          <div class="hero-stat"><div class="label">Любимое событие</div><div class="value" id="statFav" style="font-size:14px;">—</div></div>
+        </div>
+      </div>
+
+      <div class="charts-row2">
+        <div class="panel">
+          <div class="panel-title"><span><span class="tick"></span>Активность автора по датам</span></div>
+          <div class="chart-wrap short"><canvas id="chartAuthorTimeline"></canvas></div>
+        </div>
+      </div>
+
+      <div class="table-header">
+        <h3>Отчёты автора</h3>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Дата / время</th>
+              <th>Событие</th>
+              <th>Победитель</th>
+              <th>Участники</th>
+            </tr>
+          </thead>
+          <tbody id="authorTableBody"></tbody>
+        </table>
+      </div>
+      <div class="empty-state" id="authorEmptyState" style="display:none;">У этого автора пока нет отчётов.</div>
+    </section>
+
+  </div>
+
+</main>
+
+<!-- shared SVG gradient defs for seal rings -->
+<svg width="0" height="0" style="position:absolute;">
+  <defs>
+    <linearGradient id="sealGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f2c877"/>
+      <stop offset="100%" stop-color="#d4a24e"/>
+    </linearGradient>
+  </defs>
+</svg>
+
+<script>
+(function(){
+  const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
+  let allReports = [];
+  let charts = {};
+
+  const $ = (id) => document.getElementById(id);
+
+  // ---------------- status / gate ----------------
+  function setStatus(state, text){
+    const dot = $('statusDot'), label = $('statusText');
+    dot.className = 'dot' + (state === 'live' ? ' live' : state === 'err' ? ' err' : '');
+    label.textContent = text;
+  }
+
+  function showError(msg){
+    $('loadingState').style.display = 'none';
+    $('app').style.display = 'none';
+    $('refreshBtn').style.display = 'none';
+    $('gateErrorWrap').innerHTML = `<div class="gate-error">${escapeHtml(msg)}</div>`;
+  }
+
+  async function connectAndLoad(){
+    $('gateErrorWrap').innerHTML = '';
+    $('loadingState').style.display = 'block';
+    $('app').style.display = 'none';
+    setStatus('', 'загрузка…');
+    try{
+      const res = await fetch(WORKER_URL + '/reports?limit=200');
+      if(!res.ok){ throw new Error('Ошибка сервера: HTTP ' + res.status); }
+      const data = await res.json();
+      if(!data.ok){ throw new Error(data.error || 'Неизвестная ошибка воркера.'); }
+      allReports = (data.reports || []).map(parseReport);
+      setStatus('live', 'подключено · ' + allReports.length + ' отчётов');
+      $('loadingState').style.display = 'none';
+      $('app').style.display = 'block';
+      $('refreshBtn').style.display = 'inline-block';
+      renderRoute();
+    } catch(e){
+      setStatus('err', 'ошибка подключения');
+      let hint = e.message || String(e);
+      if(hint.includes('Failed to fetch')){
+        hint = 'Не удалось достучаться до воркера. Проверь, что он задеплоен и в нём включены CORS-заголовки (см. worker-with-cors.js).';
+      }
+      showError(hint);
+    }
+  }
+
+  function parseReport(r){
+    let players = [], scans = [];
+    try{ players = JSON.parse(r.players || '[]'); }catch(e){}
+    try{ scans = JSON.parse(r.scans || '[]'); }catch(e){}
+    if(!Array.isArray(players)) players = [];
+    if(!Array.isArray(scans)) scans = [];
+    return { ...r, playersArr: players, scansArr: scans };
+  }
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function escapeAttr(s){ return escapeHtml(s); }
+
+  // ---------------- date helpers ----------------
+  function fmtDate(d){
+    const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  }
+  function normalizeDateStr(s){
+    if(!s) return '';
+    s = String(s).trim();
+    // already ISO: 2026-08-30
+    let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if(m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+    // DD.MM.YYYY (e.g. 30.08.2026)
+    m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+    if(m) return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+    // DD/MM/YYYY
+    m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if(m) return `${m[3]}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
+    const d = new Date(s);
+    return isNaN(d) ? '' : fmtDate(d);
+  }
+  function reportDateStr(r){
+    return normalizeDateStr(r.date) || normalizeDateStr(r.created_at) || '';
+  }
+  function getWeekStart(ref = new Date()){
+    const d = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate());
+    const day = d.getDay(); // 0=Sun..6=Sat
+    const diff = day === 0 ? -6 : 1 - day;
+    d.setDate(d.getDate() + diff);
+    return d;
+  }
+  function weekBounds(){
+    const start = getWeekStart();
+    const end = new Date(start); end.setDate(end.getDate() + 6);
+    return { start, end, startStr: fmtDate(start), endStr: fmtDate(end) };
+  }
+  function weekDayLabels(){
+    return ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+  }
+
+  // ---------------- aggregation ----------------
+  function aggregateByDate(reports){
+    const map = new Map();
+    reports.forEach(r => {
+      const key = reportDateStr(r);
+      if(!key) return;
+      map.set(key, (map.get(key) || 0) + 1);
+    });
+    return [...map.entries()].sort((a,b) => a[0] < b[0] ? -1 : 1);
+  }
+
+  function playerName(p){ return typeof p === 'string' ? p : (p && (p.name||p.player)) || JSON.stringify(p); }
+
+  function authorStats(name){
+    const mine = allReports.filter(r => (r.author && r.author.trim() ? r.author.trim() : '—') === name);
+    const wb = weekBounds();
+    const weekReports = mine.filter(r => {
+      const ds = reportDateStr(r);
+      return ds && ds >= wb.startStr && ds <= wb.endStr;
+    });
+    const totalPlayers = mine.reduce((s,r) => s + r.playersArr.length, 0);
+    const eventCount = new Map();
+    mine.forEach(r => { const e = r.event || '—'; eventCount.set(e, (eventCount.get(e)||0)+1); });
+    let favoriteEvent = '—', favMax = 0;
+    eventCount.forEach((v,k) => { if(v > favMax){ favMax = v; favoriteEvent = k; } });
+    const dailyWeek = weekDayLabels().map((_, i) => {
+      const d = new Date(wb.start); d.setDate(d.getDate() + i);
+      const ds = fmtDate(d);
+      return weekReports.filter(r => reportDateStr(r) === ds).length;
+    });
+    const lastDate = mine.reduce((m,r) => { const ds = reportDateStr(r); return ds > m ? ds : m; }, '');
+    return { name, total: mine.length, week: weekReports.length, totalPlayers, favoriteEvent, dailyWeek, lastDate, list: mine };
+  }
+
+  function allAuthorNames(){
+    return [...new Set(allReports.map(r => r.author && r.author.trim() ? r.author.trim() : '—'))].sort((a,b)=>a.localeCompare(b,'ru'));
+  }
+
+  // ---------------- mini router (authors grid <-> author detail) ----------------
+  function navigate(name, param){
+    location.hash = '#/' + name + (param ? '/' + encodeURIComponent(param) : '');
+  }
+  function parseHash(){
+    const h = location.hash.replace(/^#\//,'');
+    if(!h){ return { name:'authors', param:null }; }
+    const parts = h.split('/');
+    if(parts[0] === 'author' && parts[1]){ return { name:'author', param: decodeURIComponent(parts[1]) }; }
+    return { name:'authors', param:null };
+  }
+  function renderRoute(){
+    const route = parseHash();
+    $('view-authors').style.display = route.name === 'authors' ? 'block' : 'none';
+    $('view-author-detail').style.display = route.name === 'author' ? 'block' : 'none';
+    if(route.name === 'authors'){ renderAuthorsGrid(); }
+    else{ renderAuthorDetail(route.param); }
+  }
+  window.addEventListener('hashchange', () => { if(allReports.length) renderRoute(); });
+  $('backToAuthors').addEventListener('click', () => navigate('authors'));
+  $('refreshBtn').addEventListener('click', () => connectAndLoad());
+
+  // ---------------- seal ring (SVG) ----------------
+  function sealRingSVG(size, strokeWidth, fraction, centerLabel, subLabel){
+    const r = (size - strokeWidth) / 2;
+    const c = 2 * Math.PI * r;
+    const off = c * (1 - Math.max(0, Math.min(1, fraction)));
+    return `
+      <svg class="seal-ring" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <circle class="track" cx="${size/2}" cy="${size/2}" r="${r}" stroke-width="${strokeWidth}"></circle>
+        <circle class="prog" cx="${size/2}" cy="${size/2}" r="${r}" stroke-width="${strokeWidth}"
+          stroke-dasharray="${c}" stroke-dashoffset="${off}"></circle>
+      </svg>
+      <div class="seal-ring-num" style="flex-direction:column; line-height:1;">
+        <div style="font-size:${size*0.28}px;">${centerLabel}</div>
+        ${subLabel ? `<div style="font-size:9px; font-weight:500; color:var(--text-faint); letter-spacing:.4px; margin-top:2px;">${subLabel}</div>` : ''}
+      </div>`;
+  }
+
+  function chartTheme(){
+    return { color: '#929aab', grid: 'rgba(255,255,255,0.05)', font: { family: 'Inter', size: 11 } };
+  }
+
+  function gradientFill(ctx, chartArea, colorTop, colorBottom){
+    if(!chartArea) return colorTop;
+    const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+    g.addColorStop(0, colorTop);
+    g.addColorStop(1, colorBottom);
+    return g;
+  }
+
+  const glowPlugin = {
+    id: 'softGlow',
+    beforeDatasetsDraw(chart, args, opts){
+      chart.ctx.save();
+      chart.ctx.shadowColor = opts.color || 'rgba(79,195,176,.35)';
+      chart.ctx.shadowBlur = opts.blur || 10;
+    },
+    afterDatasetsDraw(chart){ chart.ctx.restore(); }
+  };
+  if(typeof Chart !== 'undefined'){ Chart.register(glowPlugin); Chart.defaults.font.family = 'Inter'; }
+
+  function baseTooltip(){
+    return {
+      backgroundColor: '#1b202a', borderColor: '#2a3140', borderWidth: 1,
+      titleColor: '#ece7da', bodyColor: '#c8cdd8', padding: 10, cornerRadius: 8,
+      titleFont: { family:'Inter', weight:'600', size:12 }, bodyFont: { family:'JetBrains Mono', size:11.5 },
+      displayColors: false,
+    };
+  }
+
+  function renderReportsTable(list, tbodyEl, emptyEl){
+    emptyEl.style.display = list.length ? 'none' : 'block';
+    tbodyEl.innerHTML = list.map((r, i) => {
+      const when = (r.date || '') + (r.time ? ' ' + r.time : '');
+      return `
+      <tr data-idx="${i}" class="report-row">
+        <td class="mono">${escapeHtml(when || r.created_at || '—')}</td>
+        <td>${escapeHtml(r.event || '—')}</td>
+        <td class="badge-winner">${escapeHtml(r.winner || '—')}</td>
+        <td class="players-count">${r.playersArr.length} чел.</td>
+      </tr>
+      <tr class="detail-row" data-detail="${i}" style="display:none;">
+        <td colspan="4">
+          <div class="detail-inner">
+            <div class="detail-col">
+              <h4>Участники (${r.playersArr.length})</h4>
+              ${r.playersArr.length ? `<div class="tag-list">${r.playersArr.map(p => `<span class="tag">${escapeHtml(playerName(p))}</span>`).join('')}</div>` : '<div class="empty-hint">нет данных</div>'}
+            </div>
+            <div class="detail-col">
+              <h4>Сканы (${r.scansArr.length})</h4>
+              ${r.scansArr.length ? `<div class="tag-list">${r.scansArr.map(s => `<span class="tag">${escapeHtml(typeof s === 'string' ? s : JSON.stringify(s))}</span>`).join('')}</div>` : '<div class="empty-hint">нет данных</div>'}
+            </div>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+
+    tbodyEl.querySelectorAll('.report-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const idx = row.getAttribute('data-idx');
+        const detail = tbodyEl.querySelector(`[data-detail="${idx}"]`);
+        const isOpen = detail.style.display !== 'none';
+        detail.style.display = isOpen ? 'none' : 'table-row';
+        row.classList.toggle('expanded', !isOpen);
+      });
+    });
+  }
+
+  // ---------------- authors grid render ----------------
+  function renderAuthorsGrid(){
+    const wb = weekBounds();
+    $('weekRangeLabel').textContent = `неделя: ${wb.startStr} — ${wb.endStr}`;
+    const q = ($('authorsSearch').value || '').trim().toLowerCase();
+    const names = allAuthorNames().filter(n => !q || n.toLowerCase().includes(q));
+    const stats = names.map(authorStats);
+    stats.sort((a,b) => b.week - a.week || b.total - a.total);
+    const maxWeek = Math.max(1, ...stats.map(s => s.week));
+
+    $('authorsEmpty').style.display = stats.length ? 'none' : 'block';
+    $('authorsGrid').innerHTML = stats.map(s => {
+      const initials = s.name === '—' ? '?' : s.name.slice(0,2).toUpperCase();
+      const todayIdx = (() => { const d = new Date().getDay(); return d === 0 ? 6 : d-1; })();
+      const bars = s.dailyWeek.map((v, i) => {
+        const h = v > 0 ? Math.min(100, 30 + v*25) : 8;
+        return `<div class="bar ${v>0?'hit':''} ${i===todayIdx?'today':''}" style="height:${h}%;" title="${weekDayLabels()[i]}: ${v}"></div>`;
+      }).join('');
+      return `
+      <button class="author-card" data-author="${escapeAttr(s.name)}">
+        <div class="top-row">
+          <div class="seal-ring-wrap" style="width:58px;height:58px;">
+            ${sealRingSVG(58, 6, s.week/maxWeek, s.week, 'МП')}
+          </div>
+          <div>
+            <div class="author-name">${escapeHtml(s.name)}</div>
+            <div class="author-sub">${initials} · всего отчётов: ${s.total}</div>
+          </div>
+        </div>
+        <div class="week-strip">${bars}</div>
+        <div class="meta-row">
+          <span>Участников: <b>${s.totalPlayers}</b></span>
+          <span>Посл.: <b>${s.lastDate || '—'}</b></span>
+        </div>
+      </button>`;
+    }).join('');
+
+    $('authorsGrid').querySelectorAll('.author-card').forEach(card => {
+      card.addEventListener('click', () => navigate('author', card.dataset.author));
+    });
+  }
+  $('authorsSearch').addEventListener('input', renderAuthorsGrid);
+
+  // ---------------- author detail render ----------------
+  function renderAuthorDetail(name){
+    const s = authorStats(name);
+    const maxWeek = Math.max(1, ...allAuthorNames().map(n => authorStats(n).week));
+
+    $('authorName').textContent = s.name;
+    $('authorSub').textContent = `Последний отчёт: ${s.lastDate || '—'}`;
+    $('statWeek').textContent = s.week;
+    $('statTotal').textContent = s.total;
+    $('statPlayers').textContent = s.totalPlayers;
+    $('statFav').textContent = s.favoriteEvent || '—';
+
+    $('heroRingWrap').style.width = '96px';
+    $('heroRingWrap').style.height = '96px';
+    $('heroRingWrap').innerHTML = sealRingSVG(96, 8, s.week/maxWeek, s.week, 'МП / нед.');
+
+    // timeline chart for this author
+    if(typeof Chart !== 'undefined'){
+      const theme = chartTheme();
+      const byDate = aggregateByDate(s.list);
+      if(charts.authorTimeline) charts.authorTimeline.destroy();
+      charts.authorTimeline = new Chart($('chartAuthorTimeline'), {
+        type: 'line',
+        data: {
+          labels: byDate.map(d => d[0]),
+          datasets: [{
+            label: 'Отчётов', data: byDate.map(d => d[1]),
+            borderColor: '#d4a24e',
+            backgroundColor: (ctx) => gradientFill(ctx.chart.ctx, ctx.chart.chartArea, 'rgba(212,162,78,0.3)', 'rgba(212,162,78,0.0)'),
+            fill:true, tension:0.42, pointRadius:0, pointHoverRadius:5,
+            pointBackgroundColor:'#f2c877', borderWidth:2.5, cubicInterpolationMode:'monotone',
+          }]
+        },
+        options: {
+          responsive:true, maintainAspectRatio:false, animation:{ duration:900, easing:'easeOutQuart' },
+          interaction:{ intersect:false, mode:'index' },
+          plugins:{ legend:{ display:false }, tooltip: baseTooltip(), softGlow:{ color:'rgba(212,162,78,.35)', blur:14 } },
+          scales:{
+            x:{ ticks:{ color: theme.color, font: theme.font, maxRotation:0, autoSkip:true, maxTicksLimit:8 }, grid:{ display:false }, border:{ color:'#2a3140' } },
+            y:{ beginAtZero:true, ticks:{ color: theme.color, font: theme.font, precision:0 }, grid:{ color: theme.grid }, border:{ display:false } }
+          }
+        }
+      });
+    }
+
+    renderReportsTable(s.list.slice().sort((a,b) => (b.created_at||'') < (a.created_at||'') ? -1 : 1), $('authorTableBody'), $('authorEmptyState'));
+  }
+
+  // ---------------- init ----------------
+  connectAndLoad();
+})();
+</script>
+</body>
+</html>
