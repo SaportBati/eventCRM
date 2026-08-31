@@ -64,7 +64,7 @@ a{ color: var(--teal-bright); }
   position: fixed;
   inset: 0;
   z-index: -2;
-  background-image: none; /* <-- сюда: url('путь/к/картинке.jpg') */
+  background-image: url('https://i.imgur.com/BerRiSK.png');
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
