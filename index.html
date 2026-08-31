@@ -17,14 +17,19 @@
 </head>
 <body>
 
+<div class="hero-bg" id="heroBg" aria-hidden="true"></div>
+
 <div class="aurora" aria-hidden="true"><span class="b1"></span><span class="b2"></span><span class="b3"></span></div>
+
+<div class="scroll-mouse" id="scrollMouse" aria-hidden="true">
+  <div class="scroll-wheel"></div>
+</div>
 
 <header>
   <div class="brand">
-    <div class="seal"><span>ES</span></div>
     <div class="brand-copy">
-      <h1>EventScan</h1>
-      <div class="subtitle">Журнал отчётов о событиях гильдии</div>
+      <h1 id="brandTitle">Arizona Event CRM</h1>
+      <div class="subtitle" id="brandSub">Журнал отчётов о проведенных МП</div>
     </div>
   </div>
 
@@ -33,13 +38,9 @@
     <a href="author.html">Авторы</a>
   </nav>
 
-  <div class="status-row">
-    <button class="btn primary" id="refreshBtn" style="display:none;">↻ Обновить</button>
-  </div>
 </header>
 
-<!-- Место под фоновую картинку — задать её можно в styles.css в .bg-banner { background-image: ... } -->
-<div class="bg-banner" aria-hidden="true"></div>
+<div class="hero-spacer" aria-hidden="true"></div>
 
 <main>
 
@@ -170,7 +171,6 @@
   function showError(msg){
     $('loadingState').style.display = 'none';
     $('app').style.display = 'none';
-    $('refreshBtn').style.display = 'none';
     $('gateErrorWrap').innerHTML = `<div class="gate-error">${escapeHtml(msg)}</div>`;
   }
 
@@ -188,7 +188,6 @@
       setStatus('live', 'подключено · ' + allReports.length + ' отчётов');
       $('loadingState').style.display = 'none';
       $('app').style.display = 'block';
-      $('refreshBtn').style.display = 'inline-block';
       buildAuthorFilter();
       renderDashboard();
     } catch(e){
@@ -557,10 +556,84 @@
   $('searchInput').addEventListener('input', () => renderReportsTable(getFiltered(), $('tableBody'), $('emptyState')));
   $('authorFilter').addEventListener('change', () => renderReportsTable(getFiltered(), $('tableBody'), $('emptyState')));
   $('sortSelect').addEventListener('change', () => renderReportsTable(getFiltered(), $('tableBody'), $('emptyState')));
-  $('refreshBtn').addEventListener('click', () => connectAndLoad());
 
   // ---------------- init ----------------
   connectAndLoad();
+})();
+</script>
+
+<script>
+(function(){
+  const heroBg = document.getElementById('heroBg');
+  const spacer = document.querySelector('.hero-spacer');
+  const mainEl = document.querySelector('main');
+  const headerEl = document.querySelector('header');
+  const brandTitle = document.getElementById('brandTitle');
+  const brandSub = document.getElementById('brandSub');
+  const scrollMouse = document.getElementById('scrollMouse');
+  if(!heroBg || !spacer) return;
+  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(reduceMotion){
+    if(mainEl){ mainEl.style.opacity = 1; mainEl.style.transform = 'none'; }
+    return;
+  }
+  const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
+  let ticking = false;
+  let isVertical = false;
+  let swapping = false;
+  function update(){
+    const h = spacer.offsetHeight || window.innerHeight;
+    const p = Math.min(1, Math.max(0, window.scrollY / h));
+    const pe = easeOutCubic(p);
+    heroBg.style.filter = `blur(${(pe*20).toFixed(1)}px) brightness(${(1 - pe*0.565).toFixed(2)})`;
+    if(scrollMouse){
+      scrollMouse.style.opacity = String(Math.max(0, 1 - p*1.6));
+      scrollMouse.style.pointerEvents = p > 0.5 ? 'none' : 'auto';
+    }
+    if(mainEl){
+      mainEl.style.opacity = String(pe);
+      mainEl.style.transform = `translateY(${((1-pe)*52).toFixed(1)}px)`;
+    }
+    if(headerEl){
+      headerEl.style.setProperty('--frame-alpha', String(Math.max(0, 1 - pe)));
+    }
+    // brand title: swaps from a normal horizontal line into a true
+    // vertical label (letters stay upright, the line itself runs
+    // top-to-bottom, centered on screen) once scrolled roughly
+    // halfway past the hero — it slides in from the left edge.
+    if(brandTitle && !swapping){
+      const wantVertical = pe > 0.5;
+      if(wantVertical !== isVertical){
+        swapping = true;
+        if(wantVertical){
+          brandTitle.classList.add('vertical', 'slide-off');
+          void brandTitle.offsetWidth; // force reflow so the transition triggers
+          requestAnimationFrame(() => {
+            brandTitle.classList.remove('slide-off');
+            isVertical = true;
+            swapping = false;
+          });
+        } else {
+          brandTitle.classList.add('slide-off');
+          setTimeout(() => {
+            brandTitle.classList.remove('vertical', 'slide-off');
+            isVertical = false;
+            swapping = false;
+          }, 480);
+        }
+      }
+    }
+    if(brandSub){
+      brandSub.style.opacity = String(Math.max(0, 1 - pe*1.8));
+    }
+    ticking = false;
+  }
+  function onScroll(){
+    if(!ticking){ requestAnimationFrame(update); ticking = true; }
+  }
+  window.addEventListener('scroll', onScroll, { passive:true });
+  window.addEventListener('resize', onScroll);
+  update();
 })();
 </script>
 </body>

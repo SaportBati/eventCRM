@@ -7,15 +7,15 @@
   --border: #2a3140;
   --border-soft: #212636;
 
-  --glass: rgba(19,23,31,.30);
-  --glass-strong: rgba(19,23,31,.52);
+  --glass: rgba(10,12,16,.72);
+  --glass-strong: rgba(10,12,16,.85);
   --glass-border: rgba(236,231,218,.12);
   --glass-border-hi: rgba(140,233,215,.4);
   --glass-border-hi-gold: rgba(242,200,119,.4);
 
   --text: #ece7da;
   --text-dim: #929aab;
-  --text-faint: #565e6e;
+  --text-faint: #7b8494;
 
   --gold: #d4a24e;
   --gold-bright: #f2c877;
@@ -36,7 +36,7 @@
   --ease-out: cubic-bezier(.16,.9,.22,1);
 }
 *{box-sizing:border-box; margin:0; padding:0;}
-html{ scroll-behavior:smooth; }
+html{ scroll-behavior:smooth; color-scheme: dark; }
 body{
   background: var(--bg);
   color: var(--text);
@@ -60,33 +60,74 @@ a{ color: var(--teal-bright); }
    Сюда позже добавляется фоновая картинка сайта.
    Просто раскомментируй/впиши свой URL в background-image ниже —
    остальное (затемнение, размытие карточек) уже настроено. */
-/* ---------- background image banner (реальный видимый блок в разметке) ----------
-   Сюда позже добавляется фоновая картинка: просто впиши свою ссылку
-   в background-image ниже. Блок стоит в потоке страницы, ничем не перекрыт —
-   картинка будет полностью видна. */
-.bg-banner{
-  position: relative;
-  width: 100%;
-  height: clamp(220px, 30vw, 380px);
-  margin: 18px 20px 0;
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  border: 1px solid var(--glass-border);
-  background-color: var(--panel);
-  background-image: url('https://i.ibb.co/nqMvJC38/3523aa1a-8ef3-4493-a63b-5c9a6ab494f8.png'); /* <-- сюда своя картинка */
+/* ---------- hero background (весь экран) + правая инфо-панель ----------
+   Картинка растянута на весь экран как фон первого экрана.
+   Своя ссылка — сюда, в background-image. При скролле вниз (см. JS в конце
+   body) фон плавно блюрится, а справа гаснет мини-панель — ей на смену
+   приходит основной, более подробный контент дашборда. */
+.hero-bg{
+  position: fixed;
+  inset: 0;
+  z-index: -3;
+  background-color: var(--bg);
+  background-image: url('https://i.imgur.com/jK6oPQh.jpeg'); /* <-- сюда своя картинка */
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
-  box-shadow: var(--shadow-lift);
+  filter: blur(0px) brightness(0.92);
+  transition: filter .25s cubic-bezier(.16,.9,.22,1);
+  will-change: filter;
 }
-/* лёгкая тень снизу, чтобы блок мягко переходил в остальной контент — саму картинку не перекрывает */
-.bg-banner::after{
+.hero-bg.hero-bg-blurred{
+  filter: blur(20px) brightness(.4);
+}
+.hero-bg::after{
   content:"";
   position:absolute; inset:0;
-  background: linear-gradient(180deg, rgba(6,7,9,0) 65%, rgba(6,7,9,.55) 100%);
+  background: linear-gradient(180deg, rgba(6,7,9,.15) 0%, rgba(6,7,9,.05) 40%, rgba(6,7,9,.55) 82%, var(--bg) 100%);
   pointer-events:none;
 }
-@media (max-width: 640px){ .bg-banner{ margin: 10px 10px 0; } }
+
+.hero-spacer{ height: 100vh; pointer-events:none; }
+
+/* дашборд плавно "разворачивается" при скролле мимо hero — стартует
+   слегка опущенным и прозрачным, JS проставляет opacity/translateY
+   пропорционально прогрессу скролла на каждом кадре */
+main{
+  opacity: 0;
+  transform: translateY(52px);
+  transition: opacity .16s linear, transform .16s linear;
+  will-change: opacity, transform;
+}
+@media (prefers-reduced-motion: reduce){
+  main{ opacity:1; transform:none; transition:none; }
+}
+
+.glass.hero-info{
+  position: fixed;
+  top: 50%;
+  right: 40px;
+  transform: translateY(-50%);
+  width: 300px;
+  max-width: calc(100vw - 40px);
+  z-index: 8;
+  padding: 26px 26px 24px;
+  transition: opacity .16s linear, transform .16s linear;
+}
+.hero-info .eyebrow{ font-size:11px; color: var(--teal-bright); letter-spacing:2.4px; text-transform:uppercase; margin-bottom:10px; }
+.hero-info h2{ font-family:'Cinzel',serif; font-size: clamp(19px,2.4vw,24px); letter-spacing:.6px; line-height:1.3; margin-bottom:10px; }
+.hero-info p{ font-size:12.5px; color: var(--text-dim); line-height:1.65; }
+.hero-info .scroll-hint{
+  margin-top:18px; display:flex; align-items:center; gap:8px;
+  font-size:11px; color: var(--text-faint); letter-spacing:.4px; text-transform:uppercase;
+}
+.hero-info .scroll-hint .arrow{ animation: bounceDown 1.8s ease-in-out infinite; }
+@keyframes bounceDown{ 0%,100%{ transform: translateY(0); } 50%{ transform: translateY(5px); } }
+@media (max-width: 780px){
+  .glass.hero-info{ right:16px; left:16px; width:auto; top:auto; bottom:34px; transform:none; text-align:center; }
+  .hero-info .scroll-hint{ justify-content:center; }
+}
+@media (prefers-reduced-motion: reduce){ .hero-info .scroll-hint .arrow{ animation:none; } }
 
 /* ---------- aurora backdrop ---------- */
 .aurora{ position: fixed; inset: -10%; z-index:-1; overflow:hidden; pointer-events:none; }
@@ -109,38 +150,92 @@ a{ color: var(--teal-bright); }
   *{ animation-duration:0.01ms !important; animation-iteration-count:1 !important; scroll-behavior:auto !important; }
 }
 
+/* ---------- scroll-down mouse indicator ---------- */
+.scroll-mouse{
+  position: fixed;
+  left: 50%;
+  bottom: 34px;
+  transform: translateX(-50%);
+  width: 26px;
+  height: 42px;
+  border: 2px solid var(--glass-border-hi);
+  border-radius: 999px;
+  z-index: 8;
+  display: flex;
+  justify-content: center;
+  padding-top: 8px;
+  transition: opacity .16s linear;
+  pointer-events: none;
+}
+.scroll-wheel{
+  width: 4px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--teal-bright);
+  animation: scrollWheelMove 1.6s ease-in-out infinite;
+}
+@keyframes scrollWheelMove{
+  0%{ transform: translateY(0); opacity: 1; }
+  60%{ transform: translateY(14px); opacity: 0; }
+  61%{ transform: translateY(0); opacity: 0; }
+  100%{ transform: translateY(0); opacity: 1; }
+}
+@media (max-width: 640px){ .scroll-mouse{ bottom: 20px; } }
+@media (prefers-reduced-motion: reduce){ .scroll-wheel{ animation: none; } }
+
 /* ---------- header ---------- */
 header{
+  --frame-alpha: 1;
   position: sticky; top:0; z-index: 40;
   margin: 14px 20px 0;
   padding: 14px 22px;
   border-radius: 999px;
-  border: 1px solid var(--glass-border);
+  border: 1px solid rgba(236,231,218, calc(var(--frame-alpha) * .12));
   display:flex; align-items:center; justify-content:space-between;
   gap: 20px; flex-wrap: wrap;
-  background: var(--glass-strong);
-  backdrop-filter: blur(18px) saturate(150%);
-  -webkit-backdrop-filter: blur(18px) saturate(150%);
-  box-shadow: var(--shadow-lift);
+  background: rgba(19,23,31, calc(var(--frame-alpha) * .52));
+  backdrop-filter: blur(calc(var(--frame-alpha) * 18px)) saturate(150%);
+  -webkit-backdrop-filter: blur(calc(var(--frame-alpha) * 18px)) saturate(150%);
+  box-shadow: 0 30px 70px -30px rgba(0,0,0, calc(var(--frame-alpha) * .75));
+  transition: background .1s linear, border-color .1s linear, box-shadow .1s linear, backdrop-filter .1s linear;
 }
 @media (max-width: 640px){ header{ margin: 10px 10px 0; border-radius: 22px; padding: 12px 16px; } }
 
-.brand{ display:flex; align-items:center; gap: 14px; }
-.seal{
-  width: 44px; height: 44px; position:relative; flex-shrink:0;
-  clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
-  background: linear-gradient(150deg, var(--teal-dim), var(--teal) 60%, var(--teal-bright));
-  display:flex; align-items:center; justify-content:center;
-  box-shadow: 0 6px 20px -6px rgba(79,195,176,.6);
-  transition: transform .5s var(--ease-out);
-}
-.brand:hover .seal{ transform: rotate(8deg) scale(1.06); }
-.seal span{ font-family:'Cinzel',serif; font-weight:700; color:#06110e; font-size:15px; letter-spacing:.5px; }
+.brand{ display:flex; align-items:center; gap: 14px; min-width: 230px; }
+.brand-copy{ position:relative; }
 .brand-copy h1{
   font-family:'Cinzel', serif; font-weight:700; letter-spacing:2px;
   font-size: clamp(18px, 2.4vw, 23px); text-transform: uppercase; line-height:1.1;
+  white-space:nowrap;
 }
-.subtitle{ color: var(--text-dim); font-size: 12px; margin-top:3px; letter-spacing:.3px; }
+/* scrolled state: the line itself runs top-to-bottom, but every
+   letter stays upright (not rotated) — a true vertical label rather
+   than a sideways-rotated block. Taken out of flow (fixed, anchored
+   below the header in the empty left margin) so it doesn't stretch
+   the pill header or push the nav tabs around, and it slides in from
+   the left edge of the screen instead of just fading into view. */
+.brand-copy h1.vertical{
+  position: fixed;
+  top: 140px;
+  left: 40px;
+  z-index: 15;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  font-size: 15px;
+  letter-spacing: 4px;
+  transform: translateX(0);
+  transition: transform .55s var(--ease-out);
+}
+.brand-copy h1.vertical.slide-off{
+  transform: translateX(-160px);
+}
+@media (max-width: 640px){
+  .brand-copy h1.vertical{ left: 18px; }
+}
+@media (prefers-reduced-motion: reduce){
+  .brand-copy h1.vertical{ transition:none; }
+}
+.subtitle{ color: var(--text-dim); font-size: 12px; margin-top:3px; letter-spacing:.3px; transition: opacity .1s linear; }
 
 .nav-tabs{
   display:flex; gap:3px; background: rgba(255,255,255,.03); border:1px solid var(--border);
@@ -209,7 +304,7 @@ main{ padding: 26px 20px 90px; max-width: 1400px; margin: 0 auto; }
 /* ---------- glass / bento base ---------- */
 .glass{
   position:relative; overflow:hidden;
-  background: linear-gradient(160deg, var(--glass), rgba(19,23,31,.16));
+  background: linear-gradient(160deg, var(--glass), rgba(10,12,16,.58));
   border:1px solid var(--glass-border);
   border-radius: var(--radius-lg);
   backdrop-filter: blur(20px) saturate(150%);
@@ -222,6 +317,7 @@ main{ padding: 26px 20px 90px; max-width: 1400px; margin: 0 auto; }
   background: linear-gradient(115deg, transparent 42%, rgba(255,255,255,.09) 50%, transparent 58%);
   transform: translateX(-140%); transition: transform .85s var(--ease-out);
 }
+.glass{ text-shadow: 0 1px 4px rgba(0,0,0,.5); }
 .glass:hover{ transform: translateY(-4px); border-color: var(--glass-border-hi); box-shadow: var(--shadow-lift), var(--glow-teal); }
 .glass:hover::after{ transform: translateX(140%); }
 .glass.accent-gold:hover{ border-color: var(--glass-border-hi-gold); box-shadow: var(--shadow-lift), var(--glow-gold); }
@@ -267,6 +363,10 @@ main{ padding: 26px 20px 90px; max-width: 1400px; margin: 0 auto; }
 select{
   background: rgba(255,255,255,.03); border:1px solid var(--border); color: var(--text);
   padding: 10px 13px; border-radius:999px; font-size:12.5px; font-family:'Inter',sans-serif;
+  color-scheme: dark;
+}
+select option{
+  background: var(--panel-2); color: var(--text);
 }
 
 .table-scroll{ overflow-x:auto; border-radius: var(--radius-lg); border:1px solid var(--glass-border);
@@ -371,7 +471,7 @@ tbody tr.report-row:hover td:first-child, tbody tr.report-row.expanded td:first-
   color: var(--gold-bright); font-family:'Inter',sans-serif; font-weight:700; margin-bottom:4px;
 }
 .week-strip{ display:flex; gap:4px; align-items:flex-end; height:28px; }
-.week-strip .bar{ flex:1; background: var(--panel-3); border-radius:3px 3px 1px 1px; position:relative; min-height:4px; transition: transform .2s; }
+.week-strip .bar{ flex:1; background: rgba(255,255,255,.09); border-radius:3px 3px 1px 1px; position:relative; min-height:4px; transition: transform .2s; }
 .author-card:hover .week-strip .bar.hit{ transform: scaleY(1.05); }
 .week-strip .bar.hit{ background: linear-gradient(180deg, var(--teal-bright), var(--teal)); }
 .week-strip .bar.today{ outline:1px solid var(--gold); outline-offset:1px; }

@@ -17,14 +17,15 @@
 </head>
 <body>
 
+<div class="hero-bg hero-bg-blurred" id="heroBg" aria-hidden="true"></div>
+
 <div class="aurora" aria-hidden="true"><span class="b1"></span><span class="b2"></span><span class="b3"></span></div>
 
 <header>
   <div class="brand">
-    <div class="seal"><span>ES</span></div>
     <div class="brand-copy">
-      <h1>EventScan</h1>
-      <div class="subtitle">Журнал отчётов о событиях гильдии</div>
+      <h1 id="brandTitle">Arizona Event CRM</h1>
+      <div class="subtitle" id="brandSub">Журнал отчётов о проведенных МП</div>
     </div>
   </div>
 
@@ -33,15 +34,9 @@
     <a href="author.html" class="active">Авторы</a>
   </nav>
 
-  <div class="status-row">
-    <button class="btn primary" id="refreshBtn" style="display:none;">↻ Обновить</button>
-  </div>
 </header>
 
-<!-- Место под фоновую картинку — задать её можно в styles.css в .bg-banner { background-image: ... } -->
-<div class="bg-banner" aria-hidden="true"></div>
-
-<main>
+<main style="opacity:1; transform:none;">
 
   <div id="gateErrorWrap"></div>
   <div class="loading" id="loadingState">
@@ -187,7 +182,6 @@
   function showError(msg){
     $('loadingState').style.display = 'none';
     $('app').style.display = 'none';
-    $('refreshBtn').style.display = 'none';
     $('gateErrorWrap').innerHTML = `<div class="gate-error">${escapeHtml(msg)}</div>`;
   }
 
@@ -222,7 +216,6 @@
       setStatus('live', 'подключено · ' + allReports.length + ' отчётов');
       $('loadingState').style.display = 'none';
       $('app').style.display = 'block';
-      $('refreshBtn').style.display = 'inline-block';
       renderRoute();
     } catch(e){
       setStatus('err', 'ошибка подключения');
@@ -380,7 +373,6 @@
   }
   window.addEventListener('hashchange', () => { if(allReports.length) renderRoute(); });
   $('backToAuthors').addEventListener('click', () => navigate('authors'));
-  $('refreshBtn').addEventListener('click', () => connectAndLoad());
 
   // ---------------- seal ring (SVG) ----------------
   function sealRingSVG(size, strokeWidth, fraction, centerLabel, subLabel){
