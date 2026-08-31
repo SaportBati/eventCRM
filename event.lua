@@ -30,10 +30,16 @@ local active_worker_url = WORKER_URL_PRIMARY
 local WORKER_TOKEN = "SET_YOUR_OWN_SECRET_HERE"
 local SCAN_RADIUS  = 200.0
 
+local SCRIPT_VERSION      = "0.1"
+local VERSION_CHECK_URL   = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/version.txt"
+local UPDATE_DOWNLOAD_URL = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/event.lua"
+
+local update_available     = false
+local update_remote_version = nil
+local update_in_progress   = false
+
 local pending_reports = {}
-
 local pending_scans = {}
-
 local DETECTION_POLL_INTERVAL = 100
 
 local unique_players       = {}
@@ -44,9 +50,7 @@ local active_threads = {}
 
 local SCRIPT_DIR    = thisScript().path:match("^(.*[\\/])") or ""
 local LOCAL_DB_FILE  = SCRIPT_DIR .. "event_scan_reports.json"
-
 local SCREENS_CACHE_FILE = SCRIPT_DIR .. "screens_path_cache.txt"
-
 local HWID_CACHE_FILE = SCRIPT_DIR .. "hwid_cache.txt"
 
 local function load_local_reports()
@@ -243,8 +247,8 @@ end
 
 local function notify_hwid_denied()
     copy_to_clipboard(get_hwid() or "UNKNOWN")
-    es_msg("Твой HWID не добавлен в систему!", "FF4444")
-    es_msg("Он скопирован в буфер обмена — отправь его разработчику, чтобы тебя добавили.", "FF4444")
+    es_msg("РўРІРѕР№ HWID РЅРµ РґРѕР±Р°РІР»РµРЅ РІ СЃРёСЃС‚РµРјСѓ!", "FF4444")
+    es_msg("РћРЅ СЃРєРѕРїРёСЂРѕРІР°РЅ РІ Р±СѓС„РµСЂ РѕР±РјРµРЅР° вЂ” РѕС‚РїСЂР°РІСЊ РµРіРѕ СЂР°Р·СЂР°Р±РѕС‚С‡РёРєСѓ, С‡С‚РѕР±С‹ С‚РµР±СЏ РґРѕР±Р°РІРёР»Рё.", "FF4444")
 end
 
 local function screenshot_upload_worker(channel, worker_url, token, binary_data, hwid)
@@ -360,6 +364,49 @@ local function d1_last_report_worker(channel, worker_url, token)
         else
             channel:push({ ok = false, err = "no_reports" })
         end
+    else
+        channel:push({ ok = false, err = "http_" .. tostring(resp.status_code) })
+    end
+end
+
+local function version_check_worker(channel, url)
+    local requests = require("requests")
+
+    local ok, resp = pcall(requests.get, url, {
+        headers = { ["User-Agent"] = "SAMP-EventScan/1.4" }
+    })
+
+    if not ok or not resp then
+        channel:push({ ok = false, err = "network_fail" })
+        return
+    end
+
+    if resp.status_code == 200 and resp.text then
+        local version = resp.text:match("%S+")
+        if version then
+            channel:push({ ok = true, version = version })
+        else
+            channel:push({ ok = false, err = "empty_version" })
+        end
+    else
+        channel:push({ ok = false, err = "http_" .. tostring(resp.status_code) })
+    end
+end
+
+local function update_download_worker(channel, url)
+    local requests = require("requests")
+
+    local ok, resp = pcall(requests.get, url, {
+        headers = { ["User-Agent"] = "SAMP-EventScan/1.4" }
+    })
+
+    if not ok or not resp then
+        channel:push({ ok = false, err = "network_fail" })
+        return
+    end
+
+    if resp.status_code == 200 and resp.text and #resp.text > 0 then
+        channel:push({ ok = true, data = resp.text })
     else
         channel:push({ ok = false, err = "http_" .. tostring(resp.status_code) })
     end
@@ -536,17 +583,17 @@ local function try_worker_urls(worker_fn, build_args, timeout_ms)
     end
 
     if active_worker_url ~= WORKER_URL_FALLBACK then
-        print(string.format("[EventScan] Основной Worker (%s) не ответил: %s. Пробую резервный (%s)...",
+        print(string.format("[EventScan] РћСЃРЅРѕРІРЅРѕР№ Worker (%s) РЅРµ РѕС‚РІРµС‚РёР»: %s. РџСЂРѕР±СѓСЋ СЂРµР·РµСЂРІРЅС‹Р№ (%s)...",
             active_worker_url, tostring(result and result.err or "unknown_error"), WORKER_URL_FALLBACK))
 
         local fallback_result = attempt(WORKER_URL_FALLBACK)
         if fallback_result and fallback_result.ok then
             active_worker_url = WORKER_URL_FALLBACK
-            print(string.format("[EventScan] Резервный Worker (%s) сработал. Переключаюсь на него до конца сессии.", WORKER_URL_FALLBACK))
+            print(string.format("[EventScan] Р РµР·РµСЂРІРЅС‹Р№ Worker (%s) СЃСЂР°Р±РѕС‚Р°Р». РџРµСЂРµРєР»СЋС‡Р°СЋСЃСЊ РЅР° РЅРµРіРѕ РґРѕ РєРѕРЅС†Р° СЃРµСЃСЃРёРё.", WORKER_URL_FALLBACK))
             return fallback_result
         end
 
-        print(string.format("[EventScan] Резервный Worker (%s) тоже не ответил: %s.",
+        print(string.format("[EventScan] Р РµР·РµСЂРІРЅС‹Р№ Worker (%s) С‚РѕР¶Рµ РЅРµ РѕС‚РІРµС‚РёР»: %s.",
             WORKER_URL_FALLBACK, tostring(fallback_result and fallback_result.err or "unknown_error")))
 
         return fallback_result or result
@@ -988,7 +1035,7 @@ local screens_path_buf    = imgui_new.char[512](0)
 local screens_path_error  = ""
 local screens_path_open   = imgui_new.bool(false)
 local screens_path_busy   = false
-local screens_path_status = 'Идёт автопоиск, подождите...'
+local screens_path_status = 'РРґС‘С‚ Р°РІС‚РѕРїРѕРёСЃРє, РїРѕРґРѕР¶РґРёС‚Рµ...'
 local screens_path_result = nil
 local screens_root_folder = nil
 
@@ -1114,11 +1161,11 @@ imgui.OnFrame(function() return screens_path_open[0] end, function()
 
     local window_height = (screens_path_error ~= "") and 242 or 218
     imgui.SetNextWindowSize(imgui.ImVec2(520, window_height), imgui.Cond.Always)
-    imgui.Begin(u8('Настройка EventScan'), nil,
+    imgui.Begin(u8('РќР°СЃС‚СЂРѕР№РєР° EventScan'), nil,
         imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoSavedSettings)
-    center_text(u8('Не найдена папка со скриншотами (arizona\\screens).'))
-    center_text(u8('Вставьте путь, нажмите "Обзор..." или "Авто" для автопоиска.'))
-    center_text(u8('Путь к папке:'), hexcol(GREEN_BRIGHT))
+    center_text(u8('РќРµ РЅР°Р№РґРµРЅР° РїР°РїРєР° СЃРѕ СЃРєСЂРёРЅС€РѕС‚Р°РјРё (arizona\\screens).'))
+    center_text(u8('Р’СЃС‚Р°РІСЊС‚Рµ РїСѓС‚СЊ, РЅР°Р¶РјРёС‚Рµ "РћР±Р·РѕСЂ..." РёР»Рё "РђРІС‚Рѕ" РґР»СЏ Р°РІС‚РѕРїРѕРёСЃРєР°.'))
+    center_text(u8('РџСѓС‚СЊ Рє РїР°РїРєРµ:'), hexcol(GREEN_BRIGHT))
     imgui.PushItemWidth(-1)
     imgui.InputText('##screens_path_input', screens_path_buf, ffi.sizeof(screens_path_buf))
     imgui.PopItemWidth()
@@ -1139,27 +1186,27 @@ imgui.OnFrame(function() return screens_path_open[0] end, function()
         local avail_w = imgui.GetContentRegionAvail().x
         local btn_w = (avail_w - gap * 2) / 3
 
-        if imgui.Button(u8('Готово'), imgui.ImVec2(btn_w, 34)) then
+        if imgui.Button(u8('Р“РѕС‚РѕРІРѕ'), imgui.ImVec2(btn_w, 34)) then
             local path = ffi.string(screens_path_buf)
             path = path:gsub('^%s+', ''):gsub('%s+$', ''):gsub('"', '')
 
             path = utf8_to_ansi(path)
             if path == "" then
-                screens_path_error = "Введите путь к папке"
+                screens_path_error = "Р’РІРµРґРёС‚Рµ РїСѓС‚СЊ Рє РїР°РїРєРµ"
             elseif not is_dir(path) then
-                screens_path_error = "Такой папки не существует"
+                screens_path_error = "РўР°РєРѕР№ РїР°РїРєРё РЅРµ СЃСѓС‰РµСЃС‚РІСѓРµС‚"
             else
                 screens_path_error = ""
                 screens_path_result = { mode = "manual", path = path }
             end
         end
         imgui.SameLine(0, gap)
-        if imgui.Button(u8('Обзор...'), imgui.ImVec2(btn_w, 34)) then
+        if imgui.Button(u8('РћР±Р·РѕСЂ...'), imgui.ImVec2(btn_w, 34)) then
             screens_path_error = ""
             screens_path_result = { mode = "browse" }
         end
         imgui.SameLine(0, gap)
-        if imgui.Button(u8('Авто'), imgui.ImVec2(btn_w, 34)) then
+        if imgui.Button(u8('РђРІС‚Рѕ'), imgui.ImVec2(btn_w, 34)) then
             screens_path_error = ""
             screens_path_result = { mode = "auto" }
         end
@@ -1197,7 +1244,7 @@ local function resolve_screens_root(callback)
 
                 screens_path_error  = ""
                 screens_path_busy   = true
-                screens_path_status = 'Проверяю папку — жду тестовый скриншот (F8)...'
+                screens_path_status = 'РџСЂРѕРІРµСЂСЏСЋ РїР°РїРєСѓ вЂ” Р¶РґСѓ С‚РµСЃС‚РѕРІС‹Р№ СЃРєСЂРёРЅС€РѕС‚ (F8)...'
 
                 local ok = verify_screens_folder(action.path)
                 screens_path_busy = false
@@ -1205,22 +1252,22 @@ local function resolve_screens_root(callback)
                 if ok then
                     screens_path_open[0] = false
                     save_cached_screens_root(action.path)
-                    es_msg("Папка подтверждена — тестовый скриншот найден!")
+                    es_msg("РџР°РїРєР° РїРѕРґС‚РІРµСЂР¶РґРµРЅР° вЂ” С‚РµСЃС‚РѕРІС‹Р№ СЃРєСЂРёРЅС€РѕС‚ РЅР°Р№РґРµРЅ!")
                     callback(action.path)
                     return
                 else
-                    screens_path_error = "Тестовый скриншот не появился в этой папке за отведённое время. Проверьте путь и попробуйте снова."
+                    screens_path_error = "РўРµСЃС‚РѕРІС‹Р№ СЃРєСЂРёРЅС€РѕС‚ РЅРµ РїРѕСЏРІРёР»СЃСЏ РІ СЌС‚РѕР№ РїР°РїРєРµ Р·Р° РѕС‚РІРµРґС‘РЅРЅРѕРµ РІСЂРµРјСЏ. РџСЂРѕРІРµСЂСЊС‚Рµ РїСѓС‚СЊ Рё РїРѕРїСЂРѕР±СѓР№С‚Рµ СЃРЅРѕРІР°."
 
                 end
             elseif action.mode == "browse" then
 
                 screens_path_error   = ""
                 screens_path_busy    = true
-                screens_path_status  = 'Открыт системный диалог выбора папки...'
+                screens_path_status  = 'РћС‚РєСЂС‹С‚ СЃРёСЃС‚РµРјРЅС‹Р№ РґРёР°Р»РѕРі РІС‹Р±РѕСЂР° РїР°РїРєРё...'
 
                 local browse_channel = effil.channel()
                 local browse_thr = effil.thread(browse_folder_worker)(
-                    browse_channel, u8('Выберите папку arizona\\screens')
+                    browse_channel, u8('Р’С‹Р±РµСЂРёС‚Рµ РїР°РїРєСѓ arizona\\screens')
                 )
                 active_threads[#active_threads+1] = browse_thr
 
@@ -1231,7 +1278,7 @@ local function resolve_screens_root(callback)
                     if browse_result and browse_result.err == "cancelled" then
 
                     else
-                        screens_path_error = "Не удалось открыть диалог выбора папки. Введите путь вручную."
+                        screens_path_error = "РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РєСЂС‹С‚СЊ РґРёР°Р»РѕРі РІС‹Р±РѕСЂР° РїР°РїРєРё. Р’РІРµРґРёС‚Рµ РїСѓС‚СЊ РІСЂСѓС‡РЅСѓСЋ."
                     end
                 else
                     local chosen_path = browse_result.path
@@ -1240,9 +1287,9 @@ local function resolve_screens_root(callback)
 
                     if not is_dir(chosen_path) then
                         screens_path_busy = false
-                        screens_path_error = "Выбранная папка недоступна."
+                        screens_path_error = "Р’С‹Р±СЂР°РЅРЅР°СЏ РїР°РїРєР° РЅРµРґРѕСЃС‚СѓРїРЅР°."
                     else
-                        screens_path_status = 'Проверяю папку — жду тестовый скриншот (F8)...'
+                        screens_path_status = 'РџСЂРѕРІРµСЂСЏСЋ РїР°РїРєСѓ вЂ” Р¶РґСѓ С‚РµСЃС‚РѕРІС‹Р№ СЃРєСЂРёРЅС€РѕС‚ (F8)...'
 
                         local ok = verify_screens_folder(chosen_path)
                         screens_path_busy = false
@@ -1250,43 +1297,43 @@ local function resolve_screens_root(callback)
                         if ok then
                             screens_path_open[0] = false
                             save_cached_screens_root(chosen_path)
-                            es_msg("Папка подтверждена — тестовый скриншот найден!")
+                            es_msg("РџР°РїРєР° РїРѕРґС‚РІРµСЂР¶РґРµРЅР° вЂ” С‚РµСЃС‚РѕРІС‹Р№ СЃРєСЂРёРЅС€РѕС‚ РЅР°Р№РґРµРЅ!")
                             callback(chosen_path)
                             return
                         else
-                            screens_path_error = "Тестовый скриншот не появился в этой папке за отведённое время. Проверьте путь и попробуйте снова."
+                            screens_path_error = "РўРµСЃС‚РѕРІС‹Р№ СЃРєСЂРёРЅС€РѕС‚ РЅРµ РїРѕСЏРІРёР»СЃСЏ РІ СЌС‚РѕР№ РїР°РїРєРµ Р·Р° РѕС‚РІРµРґС‘РЅРЅРѕРµ РІСЂРµРјСЏ. РџСЂРѕРІРµСЂСЊС‚Рµ РїСѓС‚СЊ Рё РїРѕРїСЂРѕР±СѓР№С‚Рµ СЃРЅРѕРІР°."
                         end
                     end
                 end
             else
                 screens_path_busy   = true
-                screens_path_status = 'Идёт автопоиск, подождите...'
+                screens_path_status = 'РРґС‘С‚ Р°РІС‚РѕРїРѕРёСЃРє, РїРѕРґРѕР¶РґРёС‚Рµ...'
 
                 local found = find_screens_folder_everywhere()
 
                 if not found then
-                    screens_path_status = 'Не нашёл папку напрямую — жду сообщение о сохранении скриншота в чате (F8)...'
+                    screens_path_status = 'РќРµ РЅР°С€С‘Р» РїР°РїРєСѓ РЅР°РїСЂСЏРјСѓСЋ вЂ” Р¶РґСѓ СЃРѕРѕР±С‰РµРЅРёРµ Рѕ СЃРѕС…СЂР°РЅРµРЅРёРё СЃРєСЂРёРЅС€РѕС‚Р° РІ С‡Р°С‚Рµ (F8)...'
                     found = find_screens_folder_via_chatlog()
                 end
 
                 if found then
 
-                    screens_path_status = 'Нашёл! Проверяю папку — жду тестовый скриншот (F8)...'
+                    screens_path_status = 'РќР°С€С‘Р»! РџСЂРѕРІРµСЂСЏСЋ РїР°РїРєСѓ вЂ” Р¶РґСѓ С‚РµСЃС‚РѕРІС‹Р№ СЃРєСЂРёРЅС€РѕС‚ (F8)...'
                     local ok = verify_screens_folder(found)
                     screens_path_busy = false
 
                     if ok then
                         screens_path_open[0] = false
                         save_cached_screens_root(found)
-                        es_msg("Нашёл и подтвердил тестовым скриншотом! Запомню, чтобы не искать заново!")
+                        es_msg("РќР°С€С‘Р» Рё РїРѕРґС‚РІРµСЂРґРёР» С‚РµСЃС‚РѕРІС‹Рј СЃРєСЂРёРЅС€РѕС‚РѕРј! Р—Р°РїРѕРјРЅСЋ, С‡С‚РѕР±С‹ РЅРµ РёСЃРєР°С‚СЊ Р·Р°РЅРѕРІРѕ!")
                         callback(found)
                         return
                     else
-                        screens_path_error = "Папка найдена автопоиском, но тестовый скриншот в ней не появился. Укажите путь вручную."
+                        screens_path_error = "РџР°РїРєР° РЅР°Р№РґРµРЅР° Р°РІС‚РѕРїРѕРёСЃРєРѕРј, РЅРѕ С‚РµСЃС‚РѕРІС‹Р№ СЃРєСЂРёРЅС€РѕС‚ РІ РЅРµР№ РЅРµ РїРѕСЏРІРёР»СЃСЏ. РЈРєР°Р¶РёС‚Рµ РїСѓС‚СЊ РІСЂСѓС‡РЅСѓСЋ."
                     end
                 else
                     screens_path_busy = false
-                    screens_path_error = "Не найдено автоматически (включая поиск через чат-лог). Укажите путь вручную."
+                    screens_path_error = "РќРµ РЅР°Р№РґРµРЅРѕ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё (РІРєР»СЋС‡Р°СЏ РїРѕРёСЃРє С‡РµСЂРµР· С‡Р°С‚-Р»РѕРі). РЈРєР°Р¶РёС‚Рµ РїСѓС‚СЊ РІСЂСѓС‡РЅСѓСЋ."
 
                 end
             end
@@ -1391,11 +1438,11 @@ local SCREENSHOT_MAX_WAIT      = 4000
 local function capture_and_upload_screenshot(callback)
 
     if not screens_root_folder then
-        es_msg("Папка со скриншотами ещё не настроена — заполните открытое окно (или дождитесь автопоиска).", "FFAA00")
+        es_msg("РџР°РїРєР° СЃРѕ СЃРєСЂРёРЅС€РѕС‚Р°РјРё РµС‰С‘ РЅРµ РЅР°СЃС‚СЂРѕРµРЅР° вЂ” Р·Р°РїРѕР»РЅРёС‚Рµ РѕС‚РєСЂС‹С‚РѕРµ РѕРєРЅРѕ (РёР»Рё РґРѕР¶РґРёС‚РµСЃСЊ Р°РІС‚РѕРїРѕРёСЃРєР°).", "FFAA00")
         return callback(nil)
     end
     if not get_hwid() then
-        es_msg("HWID ещё определяется в фоне — попробуй через пару секунд.", "FFAA00")
+        es_msg("HWID РµС‰С‘ РѕРїСЂРµРґРµР»СЏРµС‚СЃСЏ РІ С„РѕРЅРµ вЂ” РїРѕРїСЂРѕР±СѓР№ С‡РµСЂРµР· РїР°СЂСѓ СЃРµРєСѓРЅРґ.", "FFAA00")
         return callback(nil)
     end
     local root_folder = screens_root_folder
@@ -1433,7 +1480,7 @@ local function capture_and_upload_screenshot(callback)
                         file:close()
                         if new_content and extract_screenshot_filename(new_content) then
                             chat_notice_shown = true
-                            es_msg("Сделал скриншот, отправляю его на сервер....")
+                            es_msg("РЎРґРµР»Р°Р» СЃРєСЂРёРЅС€РѕС‚, РѕС‚РїСЂР°РІР»СЏСЋ РµРіРѕ РЅР° СЃРµСЂРІРµСЂ....")
                         end
                     end
                 end
@@ -1447,11 +1494,11 @@ local function capture_and_upload_screenshot(callback)
         end
 
         if not chat_notice_shown then
-            es_msg("Сделал скриншот, отправляю его на сервер....")
+            es_msg("РЎРґРµР»Р°Р» СЃРєСЂРёРЅС€РѕС‚, РѕС‚РїСЂР°РІР»СЏСЋ РµРіРѕ РЅР° СЃРµСЂРІРµСЂ....")
         end
 
         if not target_file then
-            es_msg("Скриншот не найден (тайм-аут)!", "FF4444")
+            es_msg("РЎРєСЂРёРЅС€РѕС‚ РЅРµ РЅР°Р№РґРµРЅ (С‚Р°Р№Рј-Р°СѓС‚)!", "FF4444")
             return callback(nil)
         end
 
@@ -1464,7 +1511,7 @@ local function capture_and_upload_screenshot(callback)
             wait(150)
         end
         if not file then
-            es_msg("Не удалось прочесть файл скриншота с диска!", "FF4444")
+            es_msg("РќРµ СѓРґР°Р»РѕСЃСЊ РїСЂРѕС‡РµСЃС‚СЊ С„Р°Р№Р» СЃРєСЂРёРЅС€РѕС‚Р° СЃ РґРёСЃРєР°!", "FF4444")
             return callback(nil)
         end
         local binary_data = file:read("*a")
@@ -1481,7 +1528,7 @@ local function capture_and_upload_screenshot(callback)
             if is_hwid_error(err) then
                 notify_hwid_denied()
             else
-                es_msg("Ошибка загрузки скриншота: " .. tostring(err), "FF4444")
+                es_msg("РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё СЃРєСЂРёРЅС€РѕС‚Р°: " .. tostring(err), "FF4444")
             end
             callback(nil)
         end
@@ -1492,7 +1539,7 @@ local function send_report_to_d1(payload_json, on_done)
     local hwid = get_hwid()
     if not hwid then
 
-        es_msg("HWID ещё определяется в фоне — попробуй отправить отчёт через пару секунд.", "FFAA00")
+        es_msg("HWID РµС‰С‘ РѕРїСЂРµРґРµР»СЏРµС‚СЃСЏ РІ С„РѕРЅРµ вЂ” РїРѕРїСЂРѕР±СѓР№ РѕС‚РїСЂР°РІРёС‚СЊ РѕС‚С‡С‘С‚ С‡РµСЂРµР· РїР°СЂСѓ СЃРµРєСѓРЅРґ.", "FFAA00")
         if on_done then on_done(false) end
         return
     end
@@ -1502,14 +1549,14 @@ local function send_report_to_d1(payload_json, on_done)
             return { WORKER_TOKEN, payload_json, hwid }
         end, 20000)
         if result and result.ok then
-            es_msg("Отчёт успешно сохранён в базу данных!")
+            es_msg("РћС‚С‡С‘С‚ СѓСЃРїРµС€РЅРѕ СЃРѕС…СЂР°РЅС‘РЅ РІ Р±Р°Р·Сѓ РґР°РЅРЅС‹С…!")
             if on_done then on_done(true) end
         else
             local err = result and result.err or "timeout"
             if is_hwid_error(err) then
                 notify_hwid_denied()
             else
-                es_msg("Ошибка сохранения отчёта: " .. tostring(err), "FF4444")
+                es_msg("РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ РѕС‚С‡С‘С‚Р°: " .. tostring(err), "FF4444")
             end
             if on_done then on_done(false) end
         end
@@ -1529,6 +1576,78 @@ local function fetch_last_report_from_d1(on_done)
     end)
 end
 
+local function download_and_install_update()
+    if update_in_progress then return end
+    update_in_progress = true
+
+    es_msg("РЎРєР°С‡РёРІР°СЋ РѕР±РЅРѕРІР»РµРЅРёРµ...")
+
+    lua_thread.create(function()
+        local channel = effil.channel()
+        local thr = effil.thread(update_download_worker)(channel, UPDATE_DOWNLOAD_URL)
+        active_threads[#active_threads+1] = thr
+
+        local result = wait_for_channel(channel, 30000)
+        update_in_progress = false
+
+        if not result or not result.ok or not result.data then
+            es_msg("РќРµ СѓРґР°Р»РѕСЃСЊ СЃРєР°С‡Р°С‚СЊ РѕР±РЅРѕРІР»РµРЅРёРµ: " .. tostring(result and result.err or "timeout"), "FF4444")
+            return
+        end
+
+        local script_path = thisScript().path
+        local tmp_path = script_path .. ".update"
+
+        local file = io.open(tmp_path, "wb")
+        if not file then
+            es_msg("РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР·РґР°С‚СЊ РІСЂРµРјРµРЅРЅС‹Р№ С„Р°Р№Р» РґР»СЏ РѕР±РЅРѕРІР»РµРЅРёСЏ!", "FF4444")
+            return
+        end
+        file:write(result.data)
+        file:close()
+
+        local old_path = script_path .. ".old"
+        os.remove(old_path)
+        local renamed_old = os.rename(script_path, old_path)
+        if not renamed_old then
+            os.remove(tmp_path)
+            es_msg("РќРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РјРµРЅРёС‚СЊ С„Р°Р№Р» СЃРєСЂРёРїС‚Р° (РІРѕР·РјРѕР¶РЅРѕ, РѕРЅ Р·Р°РЅСЏС‚). РћР±РЅРѕРІР»РµРЅРёРµ РѕС‚РјРµРЅРµРЅРѕ.", "FF4444")
+            return
+        end
+
+        local renamed_new = os.rename(tmp_path, script_path)
+        if not renamed_new then
+            os.rename(old_path, script_path)
+            es_msg("РќРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РІРµСЂС€РёС‚СЊ Р·Р°РјРµРЅСѓ С„Р°Р№Р»Р° СЃРєСЂРёРїС‚Р°. РћР±РЅРѕРІР»РµРЅРёРµ РѕС‚РјРµРЅРµРЅРѕ.", "FF4444")
+            return
+        end
+
+        update_available = false
+        es_msg("РћР±РЅРѕРІР»РµРЅРёРµ СѓСЃРїРµС€РЅРѕ СѓСЃС‚Р°РЅРѕРІР»РµРЅРѕ! РџРµСЂРµР·Р°РїСѓСЃС‚РёС‚Рµ СЃРєСЂРёРїС‚ (РїРµСЂРµР·Р°РіСЂСѓР·РёС‚Рµ MoonLoader РёР»Рё РёРіСЂСѓ), С‡С‚РѕР±С‹ РїСЂРёРјРµРЅРёС‚СЊ РµРіРѕ.")
+    end)
+end
+
+local function check_for_update()
+    lua_thread.create(function()
+        local channel = effil.channel()
+        local thr = effil.thread(version_check_worker)(channel, VERSION_CHECK_URL)
+        active_threads[#active_threads+1] = thr
+
+        local result = wait_for_channel(channel, 15000)
+        if result and result.ok and result.version then
+            if result.version ~= SCRIPT_VERSION then
+                update_available      = true
+                update_remote_version = result.version
+                es_msg(string.format(
+                    "Р”РѕСЃС‚СѓРїРЅРѕ РѕР±РЅРѕРІР»РµРЅРёРµ ({FFFF00}%s{FFFFFF} -> {FFFF00}%s{FFFFFF}). РќР°С‡РёРЅР°СЋ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєСѓСЋ СѓСЃС‚Р°РЅРѕРІРєСѓ...",
+                    SCRIPT_VERSION, result.version
+                ), "FFFFFF")
+                download_and_install_update()
+            end
+        end
+    end)
+end
+
 function main()
     while not isSampAvailable() do wait(100) end
 
@@ -1537,24 +1656,24 @@ function main()
     end)
 
     resolve_hwid()
+    check_for_update()
 
-    es_msg("{FFFF00}/es {FFFFFF}(добавить скан), {FFFF00}")
-    es_msg("{FFFF00}/ess Название Ник_Победителя {FFFFFF}(Отправить отчет)")
-    es_msg("{FFFF00}/eslast {FFFFFF}(время с последнего отчёта)")
-    es_msg("{FFFF00}/esr {FFFFFF}(открыть CRM-дашборд твоих отчётов)")
-    es_msg("{FFFF00}/esreset {FFFFFF}(сбросить кеш папки скриншотов)")
+    es_msg("{FFFF00}/es {FFFFFF}(РґРѕР±Р°РІРёС‚СЊ СЃРєР°РЅ), {FFFF00}")
+    es_msg("{FFFF00}/ess РќР°Р·РІР°РЅРёРµ РќРёРє_РџРѕР±РµРґРёС‚РµР»СЏ {FFFFFF}(РћС‚РїСЂР°РІРёС‚СЊ РѕС‚С‡РµС‚)")
+    es_msg("{FFFF00}/eslast {FFFFFF}(РІСЂРµРјСЏ СЃ РїРѕСЃР»РµРґРЅРµРіРѕ РѕС‚С‡С‘С‚Р°)")
+    es_msg("{FFFF00}/esr {FFFFFF}(РѕС‚РєСЂС‹С‚СЊ CRM-РґР°С€Р±РѕСЂРґ С‚РІРѕРёС… РѕС‚С‡С‘С‚РѕРІ)")
+    es_msg("{FFFF00}/esreset {FFFFFF}(СЃР±СЂРѕСЃРёС‚СЊ РєРµС€ РїР°РїРєРё СЃРєСЂРёРЅС€РѕС‚РѕРІ)")
+    
     sampRegisterChatCommand("es", function()
-
         start_detection_loop()
 
         capture_and_upload_screenshot(function(screen_url)
             if not screen_url then
-
                 return
             end
 
             local lines = {
-                string.format("--- Скан #%d | %s ---", #pending_reports + 1, get_readable_time()),
+                string.format("--- РЎРєР°РЅ #%d | %s ---", #pending_reports + 1, get_readable_time()),
                 "Screenshot: " .. screen_url
             }
 
@@ -1564,13 +1683,13 @@ function main()
             })
 
             table.insert(pending_reports, table.concat(lines, "\n"))
-            es_msg(string.format("Скан добавлен в очередь (%d шт). Отправить всё: {FFFF00}/ess", #pending_reports))
+            es_msg(string.format("РЎРєР°РЅ РґРѕР±Р°РІР»РµРЅ РІ РѕС‡РµСЂРµРґСЊ (%d С€С‚). РћС‚РїСЂР°РІРёС‚СЊ РІСЃС‘: {FFFF00}/ess", #pending_reports))
         end)
     end)
 
     sampRegisterChatCommand("ess", function(params)
         if #pending_reports == 0 then
-            es_msg("Очередь пуста, нечего отправлять. Сначала используйте {FFFF00}/es", "FFAA00")
+            es_msg("РћС‡РµСЂРµРґСЊ РїСѓСЃС‚Р°, РЅРµС‡РµРіРѕ РѕС‚РїСЂР°РІР»СЏС‚СЊ. РЎРЅР°С‡Р°Р»Р° РёСЃРїРѕР»СЊР·СѓР№С‚Рµ {FFFF00}/es", "FFAA00")
             return
         end
 
@@ -1582,20 +1701,20 @@ function main()
         end
 
         if #words < 2 then
-            es_msg("Использование: {FFFF00}/ess Название события Ник_Победителя {FFFFFF}(пример: {FFFF00}/ess русская рулетка Nehto_Otto{FFFFFF})", "FF4444")
+            es_msg("РСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: {FFFF00}/ess РќР°Р·РІР°РЅРёРµ СЃРѕР±С‹С‚РёСЏ РќРёРє_РџРѕР±РµРґРёС‚РµР»СЏ {FFFFFF}(РїСЂРёРјРµСЂ: {FFFF00}/ess СЂСѓСЃСЃРєР°СЏ СЂСѓР»РµС‚РєР° Nehto_Otto{FFFFFF})", "FF4444")
             return
         end
 
         local winner_nick = words[#words]
         if not winner_nick:find("_") then
-            es_msg("Ник победителя должен быть последним словом и содержать нижнее подчёркивание (например: Nehto_Otto)", "FF4444")
+            es_msg("РќРёРє РїРѕР±РµРґРёС‚РµР»СЏ РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ РїРѕСЃР»РµРґРЅРёРј СЃР»РѕРІРѕРј Рё СЃРѕРґРµСЂР¶Р°С‚СЊ РЅРёР¶РЅРµРµ РїРѕРґС‡С‘СЂРєРёРІР°РЅРёРµ (РЅР°РїСЂРёРјРµСЂ: Nehto_Otto)", "FF4444")
             return
         end
 
         table.remove(words, #words)
         local event_name = table.concat(words, " ")
         if event_name == "" then
-            es_msg("Укажите название события перед ником победителя", "FF4444")
+            es_msg("РЈРєР°Р¶РёС‚Рµ РЅР°Р·РІР°РЅРёРµ СЃРѕР±С‹С‚РёСЏ РїРµСЂРµРґ РЅРёРєРѕРј РїРѕР±РµРґРёС‚РµР»СЏ", "FF4444")
             return
         end
 
@@ -1606,7 +1725,7 @@ function main()
 
         local author_nick = get_local_nickname()
 
-        es_msg(string.format("Отправка итогового отчёта (%d сканов, %d игроков) в базу... {FFFF00}Событие: %s | Победитель: %s | Автор: %s", #pending_reports, #players_snapshot, event_name, winner_nick, author_nick))
+        es_msg(string.format("РћС‚РїСЂР°РІРєР° РёС‚РѕРіРѕРІРѕРіРѕ РѕС‚С‡С‘С‚Р° (%d СЃРєР°РЅРѕРІ, %d РёРіСЂРѕРєРѕРІ) РІ Р±Р°Р·Сѓ... {FFFF00}РЎРѕР±С‹С‚РёРµ: %s | РџРѕР±РµРґРёС‚РµР»СЊ: %s | РђРІС‚РѕСЂ: %s", #pending_reports, #players_snapshot, event_name, winner_nick, author_nick))
 
         local scans_snapshot = pending_scans
         pending_scans = {}
@@ -1663,19 +1782,19 @@ function main()
     sampRegisterChatCommand("eslast", function()
         fetch_last_report_from_d1(function(date_str, err)
             if not date_str then
-                es_msg("Не удалось получить данные из базы: " .. tostring(err), "FF4444")
+                es_msg("РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕР»СѓС‡РёС‚СЊ РґР°РЅРЅС‹Рµ РёР· Р±Р°Р·С‹: " .. tostring(err), "FF4444")
                 return
             end
 
             local utc_tbl = parse_iso8601_utc(date_str)
             if not utc_tbl then
-                es_msg("Не удалось разобрать дату последнего отчёта", "FF4444")
+                es_msg("РќРµ СѓРґР°Р»РѕСЃСЊ СЂР°Р·РѕР±СЂР°С‚СЊ РґР°С‚Сѓ РїРѕСЃР»РµРґРЅРµРіРѕ РѕС‚С‡С‘С‚Р°", "FF4444")
                 return
             end
 
             local last_epoch = utc_table_to_local_epoch(utc_tbl)
             if not last_epoch then
-                es_msg("Ошибка расчёта времени", "FF4444")
+                es_msg("РћС€РёР±РєР° СЂР°СЃС‡С‘С‚Р° РІСЂРµРјРµРЅРё", "FF4444")
                 return
             end
 
@@ -1686,9 +1805,9 @@ function main()
             local seconds = diff % 60
 
             if minutes < 1 then
-                es_msg(string.format("С последнего отчёта прошло: %d сек.", seconds))
+                es_msg(string.format("РЎ РїРѕСЃР»РµРґРЅРµРіРѕ РѕС‚С‡С‘С‚Р° РїСЂРѕС€Р»Рѕ: %d СЃРµРє.", seconds))
             else
-                es_msg(string.format("С последнего отчёта прошло: %d мин %d сек.", minutes, seconds))
+                es_msg(string.format("РЎ РїРѕСЃР»РµРґРЅРµРіРѕ РѕС‚С‡С‘С‚Р° РїСЂРѕС€Р»Рѕ: %d РјРёРЅ %d СЃРµРє.", minutes, seconds))
             end
         end)
     end)
@@ -1704,9 +1823,9 @@ function main()
         lua_thread.create(function()
             local result = wait_for_channel(channel, 5000)
             if result and result.ok then
-                es_msg("Открываю CRM-дашборд: {FFFF00}" .. url)
+                es_msg("РћС‚РєСЂС‹РІР°СЋ CRM-РґР°С€Р±РѕСЂРґ: {FFFF00}" .. url)
             else
-                es_msg("Не удалось открыть браузер (" .. tostring(result and result.err or "timeout") .. "). Ссылка: {FFFF00}" .. url, "FF4444")
+                es_msg("РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РєСЂС‹С‚СЊ Р±СЂР°СѓР·РµСЂ (" .. tostring(result and result.err or "timeout") .. "). РЎСЃС‹Р»РєР°: {FFFF00}" .. url, "FF4444")
             end
         end)
     end)
@@ -1714,7 +1833,7 @@ function main()
     sampRegisterChatCommand("esreset", function()
         os.remove(SCREENS_CACHE_FILE)
         screens_root_folder = nil
-        es_msg("Кеш папки со скриншотами сброшен. Открываю окно для повторной настройки...")
+        es_msg("РљРµС€ РїР°РїРєРё СЃРѕ СЃРєСЂРёРЅС€РѕС‚Р°РјРё СЃР±СЂРѕС€РµРЅ. РћС‚РєСЂС‹РІР°СЋ РѕРєРЅРѕ РґР»СЏ РїРѕРІС‚РѕСЂРЅРѕР№ РЅР°СЃС‚СЂРѕР№РєРё...")
         resolve_screens_root(function(path)
             screens_root_folder = path
         end)
