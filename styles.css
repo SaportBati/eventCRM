@@ -88,7 +88,7 @@ a{ color: var(--teal-bright); }
   pointer-events:none;
 }
 
-.hero-spacer{ height: 100vh; pointer-events:none; }
+.hero-spacer{ height: 100vh; height: 100svh; pointer-events:none; }
 
 /* дашборд плавно "разворачивается" при скролле мимо hero — стартует
    слегка опущенным и прозрачным, JS проставляет opacity/translateY
@@ -369,7 +369,7 @@ select option{
   background: var(--panel-2); color: var(--text);
 }
 
-.table-scroll{ overflow-x:auto; border-radius: var(--radius-lg); border:1px solid var(--glass-border);
+.table-scroll{ overflow-x:auto; -webkit-overflow-scrolling: touch; border-radius: var(--radius-lg); border:1px solid var(--glass-border);
   background: var(--glass); backdrop-filter: blur(18px); box-shadow: var(--shadow-lift); }
 table{ width:100%; border-collapse: collapse; }
 thead th{
@@ -516,3 +516,81 @@ tbody tr.report-row:hover td:first-child, tbody tr.report-row.expanded td:first-
 
 /* reveal state used before JS animates in (guarded by JS-enabled check) */
 .reveal-ready .js-reveal{ opacity:0; transform: translateY(22px); }
+
+/* ==================================================================
+   MOBILE FIXES
+   - iOS Safari zooms the page in when a focused input/select has a
+     font-size under 16px; bump those up on small screens.
+   - Heavy backdrop-filter blur on many stacked .glass panels is a
+     real performance hit on phone GPUs (janky scroll); trim it down
+     under the mobile breakpoint.
+   - authorsSearch had a fixed inline width that could overflow very
+     narrow screens; give it a proper responsive rule instead.
+   ================================================================== */
+@media (max-width: 640px){
+  .controls input[type=text],
+  select,
+  #authorsSearch{
+    font-size: 16px;
+  }
+
+  .glass{
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+  }
+  .table-scroll{
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+  .lightbox{
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    padding: 20px;
+  }
+
+  .authors-toolbar{
+    flex-direction: column;
+    align-items: stretch;
+  }
+  #authorsSearch{
+    width: 100% !important;
+  }
+
+  .table-header .controls{
+    width: 100%;
+  }
+  .table-header .controls input[type=text]{
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .author-hero{
+    padding: 24px 20px;
+  }
+  .author-hero .hero-stats{
+    margin-left: 0;
+    gap: 18px 24px;
+  }
+
+  .lightbox img{
+    max-width: 92vw;
+    max-height: 78vh;
+  }
+
+  /* The "runs vertically along the left margin" scroll effect relies
+     on empty side margin that only exists on wide viewports. On a
+     phone the content fills the full width, so the fixed vertical
+     title lands directly on top of the stat cards / table and makes
+     both unreadable. Keep the title a normal static heading on
+     mobile instead of switching to the fixed vertical mode. */
+  .brand-copy h1.vertical{
+    position: static;
+    left: auto;
+    top: auto;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+    font-size: clamp(18px, 2.4vw, 23px);
+    letter-spacing: 2px;
+    transform: none !important;
+  }
+}
