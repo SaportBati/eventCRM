@@ -358,11 +358,12 @@ tbody tr.report-row:hover td:first-child, tbody tr.report-row.expanded td:first-
 .author-card{
   padding: 22px; cursor:pointer;
   display:flex; flex-direction:column; gap:16px; text-align:left;
+  color: var(--text); font-family: 'Inter', sans-serif; border:none;
 }
 .author-card.leader{ grid-column: span 2; grid-row: span 2; }
 @media (max-width: 720px){ .author-card.leader{ grid-column: span 1; grid-row: span 1; } }
 .author-card .top-row{ display:flex; align-items:center; gap:14px; }
-.author-name{ font-family:'Cinzel',serif; font-size:16px; letter-spacing:.3px; line-height:1.25; }
+.author-name{ font-family:'Cinzel',serif; font-size:16px; letter-spacing:.3px; line-height:1.25; color: var(--text); }
 .author-card.leader .author-name{ font-size:20px; }
 .author-sub{ font-size:11px; color: var(--text-faint); margin-top:3px; }
 .leader-tag{
