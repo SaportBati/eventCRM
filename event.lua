@@ -1,3 +1,4 @@
+-- 1
 local vkeys    = require("vkeys")
 local lfs      = require("lfs")
 local effil    = require("effil")
@@ -30,7 +31,7 @@ local active_worker_url = WORKER_URL_PRIMARY
 local WORKER_TOKEN = "SET_YOUR_OWN_SECRET_HERE"
 local SCAN_RADIUS  = 200.0
 
-local SCRIPT_VERSION      = "0.1"
+local SCRIPT_VERSION      = "1"
 local VERSION_CHECK_URL   = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/version.txt"
 local UPDATE_DOWNLOAD_URL = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/event.lua"
 
