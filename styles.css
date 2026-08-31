@@ -7,9 +7,9 @@
   --border: #2a3140;
   --border-soft: #212636;
 
-  --glass: rgba(19,23,31,.52);
-  --glass-strong: rgba(19,23,31,.78);
-  --glass-border: rgba(236,231,218,.09);
+  --glass: rgba(19,23,31,.30);
+  --glass-strong: rgba(19,23,31,.52);
+  --glass-border: rgba(236,231,218,.12);
   --glass-border-hi: rgba(140,233,215,.4);
   --glass-border-hi-gold: rgba(242,200,119,.4);
 
@@ -55,6 +55,25 @@ body{
 .mono{ font-family:'JetBrains Mono', monospace; }
 .display{ font-family:'Cinzel', serif; }
 a{ color: var(--teal-bright); }
+
+/* ---------- background image slot ----------
+   Сюда позже добавляется фоновая картинка сайта.
+   Просто раскомментируй/впиши свой URL в background-image ниже —
+   остальное (затемнение, размытие карточек) уже настроено. */
+.bg-slot{
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background-image: none; /* <-- сюда: url('путь/к/картинке.jpg') */
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+.bg-slot::after{
+  content:"";
+  position:absolute; inset:0;
+  background: linear-gradient(180deg, rgba(6,7,9,.55), rgba(6,7,9,.82) 60%, var(--bg) 100%);
+}
 
 /* ---------- aurora backdrop ---------- */
 .aurora{ position: fixed; inset: -10%; z-index:-1; overflow:hidden; pointer-events:none; }
@@ -177,7 +196,7 @@ main{ padding: 26px 20px 90px; max-width: 1400px; margin: 0 auto; }
 /* ---------- glass / bento base ---------- */
 .glass{
   position:relative; overflow:hidden;
-  background: linear-gradient(160deg, var(--glass), rgba(19,23,31,.32));
+  background: linear-gradient(160deg, var(--glass), rgba(19,23,31,.16));
   border:1px solid var(--glass-border);
   border-radius: var(--radius-lg);
   backdrop-filter: blur(20px) saturate(150%);
