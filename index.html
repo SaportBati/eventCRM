@@ -128,6 +128,15 @@
     return match ? decodeURIComponent(match[1]) : null;
   }
 
+  function cleanHwidFromUrl() {
+    // Удаляем &hwid=... из URL после сохранения
+    const hash = window.location.hash;
+    if (hash.includes('&hwid=')) {
+      const cleanHash = hash.replace(/&hwid=[^&/#]+/, '');
+      window.history.replaceState(null, '', cleanHash || '#/');
+    }
+  }
+
   function isAuthorized() {
     // Проверяем localStorage - если уже авторизован ранее
     const savedHwid = localStorage.getItem('authorized_hwid');
@@ -141,6 +150,10 @@
       // Сохраняем в localStorage для постоянной авторизации
       localStorage.setItem('authorized_hwid', hwidFromUrl);
       console.log('[Auth] HWID saved to localStorage:', hwidFromUrl);
+      
+      // Удаляем HWID из URL для безопасности
+      cleanHwidFromUrl();
+      
       return true;
     }
 
