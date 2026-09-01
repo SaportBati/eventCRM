@@ -125,7 +125,7 @@
 </div>
 
 <script>
-(function(){
+(async function(){
   const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
   let allReports = [];
   let balancesMap = new Map(); // author -> balance from D1
@@ -152,33 +152,60 @@
     }
   }
 
+  // Спрашиваем сам воркер, есть ли этот HWID в вайтлисте — вместо того,
+  // чтобы верить любой строке, которую подсунули в URL/localStorage.
+  async function isHwidAllowedByServer(hwid) {
+    try {
+      const resp = await fetch(WORKER_URL + '/check-hwid', {
+        headers: { 'X-HWID': hwid }
+      });
+      if (!resp.ok) return false;
+      const data = await resp.json();
+      return Boolean(data && data.ok && data.allowed);
+    } catch (e) {
+      console.error('[Auth] HWID check request failed:', e);
+      return false;
+    }
+  }
+
   async function isAuthorized() {
     // Сначала проверяем и очищаем URL, если есть HWID
     const hwidFromUrl = getHwidFromUrl();
     if (hwidFromUrl) {
       console.log('[Auth] HWID found in URL:', hwidFromUrl);
-      
-      // Сохраняем в localStorage (проверка при записи данных будет на worker)
-      localStorage.setItem('authorized_hwid', hwidFromUrl);
-      console.log('[Auth] HWID saved to localStorage');
-      
-      // ВСЕГДА удаляем HWID из URL (даже при повторном входе)
+      const allowed = await isHwidAllowedByServer(hwidFromUrl);
+
+      // ВСЕГДА удаляем HWID из URL (даже при неудачной попытке входа)
       cleanHwidFromUrl();
-      
+
+      if (!allowed) {
+        console.log('[Auth] HWID rejected by server');
+        localStorage.removeItem('authorized_hwid');
+        return false;
+      }
+
+      localStorage.setItem('authorized_hwid', hwidFromUrl);
+      console.log('[Auth] HWID verified and saved to localStorage');
       return true;
     }
 
-    // Если HWID в URL нет, проверяем localStorage
+    // Если HWID в URL нет, проверяем сохранённый и тоже сверяем с сервером
+    // (на случай, если он был отозван из вайтлиста после сохранения)
     const savedHwid = localStorage.getItem('authorized_hwid');
     if (savedHwid) {
+      const allowed = await isHwidAllowedByServer(savedHwid);
+      if (!allowed) {
+        localStorage.removeItem('authorized_hwid');
+        return false;
+      }
       return true;
     }
 
     return false;
   }
 
-  function checkAuth() {
-    const authorized = isAuthorized();
+  async function checkAuth() {
+    const authorized = await isAuthorized();
     if (!authorized) {
       showAuthRequired();
       return false;
@@ -248,7 +275,7 @@
   }
 
   // Проверяем авторизацию при загрузке
-  if (!checkAuth()) {
+  if (!(await checkAuth())) {
     return; // Останавливаем выполнение, если не авторизован
   }
   // ==================================================

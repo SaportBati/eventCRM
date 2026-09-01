@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Планировщик · Arizona Event CRM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<style>
+  .plan-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 12px;
+    padding: 24px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  .time-slot {
+    background: rgba(26, 31, 46, 0.6);
+    border: 2px solid rgba(79, 195, 176, 0.2);
+    border-radius: 12px;
+    padding: 16px 12px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    position: relative;
+    backdrop-filter: blur(10px);
+  }
+
+  .time-slot:hover {
+    border-color: #4fc3b0;
+    background: rgba(79, 195, 176, 0.1);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 20px rgba(79, 195, 176, 0.3);
+  }
+
+  .time-slot.booked {
+    background: rgba(79, 195, 176, 0.15);
+    border-color: #4fc3b0;
+    box-shadow: 0 0 15px rgba(79, 195, 176, 0.4);
+  }
+
+  .time-slot.booked:hover {
+    background: rgba(79, 195, 176, 0.25);
+  }
+
+  .time-code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 18px;
+    font-weight: 600;
+    color: #4fc3b0;
+    margin-bottom: 8px;
+  }
+
+  .time-slot.booked .time-code {
+    color: #8ce9d7;
+  }
+
+  .slot-label {
+    font-size: 12px;
+    color: #929aab;
+    margin-top: 4px;
+  }
+
+  .slot-info {
+    display: none;
+    position: absolute;
+    background: #1b202a;
+    border: 1px solid #4fc3b0;
+    border-radius: 8px;
+    padding: 12px;
+    min-width: 200px;
+    z-index: 1000;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    pointer-events: none;
+  }
+
+  .time-slot.booked:hover .slot-info {
+    display: block;
+  }
+
+  .slot-info-author {
+    font-size: 13px;
+    color: #d4a24e;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+
+  .slot-info-title {
+    font-size: 14px;
+    color: #ece7da;
+    line-height: 1.4;
+  }
+
+  .input-modal {
+    display: none;
+    position: fixed;
+    background: rgba(10, 14, 20, 0.95);
+    border: 2px solid #4fc3b0;
+    border-radius: 12px;
+    padding: 24px;
+    min-width: 320px;
+    z-index: 2000;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.8);
+    backdrop-filter: blur(10px);
+  }
+
+  .input-modal.show {
+    display: block;
+  }
+
+  .input-modal-header {
+    font-family: 'Cinzel', serif;
+    font-size: 18px;
+    color: #4fc3b0;
+    margin-bottom: 16px;
+  }
+
+  .input-modal input {
+    width: 100%;
+    background: rgba(26, 31, 46, 0.8);
+    border: 1px solid rgba(79, 195, 176, 0.3);
+    border-radius: 8px;
+    padding: 12px;
+    color: #ece7da;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    margin-bottom: 16px;
+  }
+
+  .input-modal input:focus {
+    outline: none;
+    border-color: #4fc3b0;
+    box-shadow: 0 0 0 3px rgba(79, 195, 176, 0.1);
+  }
+
+  .input-modal-buttons {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+  }
+
+  .input-modal-buttons button {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .btn-save {
+    background: #4fc3b0;
+    color: #0a0e14;
+  }
+
+  .btn-save:hover {
+    background: #8ce9d7;
+    transform: translateY(-1px);
+  }
+
+  .btn-cancel {
+    background: rgba(146, 154, 171, 0.2);
+    color: #c8cdd8;
+  }
+
+  .btn-cancel:hover {
+    background: rgba(146, 154, 171, 0.3);
+  }
+
+  .btn-delete {
+    background: rgba(220, 38, 38, 0.2);
+    color: #fca5a5;
+  }
+
+  .btn-delete:hover {
+    background: rgba(220, 38, 38, 0.3);
+  }
+
+  .plan-header {
+    text-align: center;
+    padding: 40px 20px 20px;
+  }
+
+  .plan-title {
+    font-family: 'Cinzel', serif;
+    font-size: 42px;
+    color: #4fc3b0;
+    margin-bottom: 12px;
+  }
+
+  .plan-subtitle {
+    font-size: 16px;
+    color: #929aab;
+  }
+</style>
+</head>
+<body>
+
+<div class="hero-bg" id="heroBg" aria-hidden="true"></div>
+<div class="aurora" aria-hidden="true"><span class="b1"></span><span class="b2"></span><span class="b3"></span></div>
+
+<header>
+  <div class="brand">
+    <div class="brand-copy">
+      <h1 id="brandTitle">Arizona Event CRM</h1>
+      <div class="subtitle" id="brandSub">Планировщик событий</div>
+    </div>
+  </div>
+
+  <nav class="nav-tabs">
+    <a href="index.html">Дашборд</a>
+    <a href="author.html">Авторы</a>
+    <a href="plan.html" class="active">Планировщик</a>
+  </nav>
+</header>
+
+<div class="hero-spacer" aria-hidden="true"></div>
+
+<main>
+  <div id="gateErrorWrap"></div>
+  <div class="loading" id="loadingState">
+    <div class="spinner"></div>
+    Загружаем планировщик…
+  </div>
+
+  <div id="app" style="display: none;">
+    <div class="plan-header">
+      <h2 class="plan-title">Планировщик событий</h2>
+      <p class="plan-subtitle">Выберите время и забронируйте слот для вашего мероприятия</p>
+    </div>
+
+    <div class="plan-grid" id="planGrid"></div>
+  </div>
+</main>
+
+<div class="input-modal" id="inputModal">
+  <div class="input-modal-header" id="modalHeader">Забронировать время</div>
+  <input type="text" id="eventTitle" placeholder="Название мероприятия" maxlength="100">
+  <div class="input-modal-buttons">
+    <button class="btn-delete" id="btnDelete" style="display: none;">Удалить</button>
+    <button class="btn-cancel" id="btnCancel">Отмена</button>
+    <button class="btn-save" id="btnSave">Сохранить</button>
+  </div>
+</div>
+
+<script>
+(async function(){
+  const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
+  const PLAN_KV_KEY = "event_plan_schedule"; // Ключ для хранения в KV
+  
+  const $ = (id) => document.getElementById(id);
+
+  // ============== АВТОРИЗАЦИЯ ==============
+  function getHwidFromUrl() {
+    const hash = window.location.hash;
+    const match = hash.match(/&hwid=([^&/#]+)/);
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  function cleanHwidFromUrl() {
+    const hash = window.location.hash;
+    if (hash.includes('&hwid=')) {
+      const cleanHash = hash.replace(/&hwid=[^&/#]+/, '');
+      window.history.replaceState(null, '', cleanHash || '#/');
+    }
+  }
+
+  async function isHwidAllowedByServer(hwid) {
+    try {
+      const resp = await fetch(WORKER_URL + '/check-hwid', {
+        headers: { 'X-HWID': hwid }
+      });
+      if (!resp.ok) return false;
+      const data = await resp.json();
+      return Boolean(data && data.ok && data.allowed);
+    } catch (e) {
+      console.error('[Auth] HWID check failed:', e);
+      return false;
+    }
+  }
+
+  async function isAuthorized() {
+    const hwidFromUrl = getHwidFromUrl();
+    if (hwidFromUrl) {
+      const allowed = await isHwidAllowedByServer(hwidFromUrl);
+      cleanHwidFromUrl();
+      if (!allowed) {
+        localStorage.removeItem('authorized_hwid');
+        return false;
+      }
+      localStorage.setItem('authorized_hwid', hwidFromUrl);
+      return true;
+    }
+
+    const savedHwid = localStorage.getItem('authorized_hwid');
+    if (savedHwid) {
+      const allowed = await isHwidAllowedByServer(savedHwid);
+      if (!allowed) {
+        localStorage.removeItem('authorized_hwid');
+        return false;
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  function getUserName() {
+    // Получаем имя пользователя из localStorage (должно быть сохранено при авторизации)
+    return localStorage.getItem('user_name') || 'Аноним';
+  }
+
+  function showAuthRequired() {
+    document.body.innerHTML = `
+      <div style="
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        background: linear-gradient(135deg, #0a0e14 0%, #1a1f2e 100%);
+        color: #ece7da;
+        font-family: 'Inter', sans-serif;
+        text-align: center;
+        padding: 20px;
+      ">
+        <div style="
+          background: rgba(26, 31, 46, 0.8);
+          border: 2px solid #4fc3b0;
+          border-radius: 16px;
+          padding: 40px;
+          max-width: 500px;
+          box-shadow: 0 8px 32px rgba(79, 195, 176, 0.2);
+        ">
+          <h1 style="
+            font-family: 'Cinzel', serif;
+            font-size: 32px;
+            margin-bottom: 20px;
+            color: #4fc3b0;
+          ">🔒 Требуется авторизация</h1>
+          <p style="
+            font-size: 16px;
+            line-height: 1.6;
+            margin-bottom: 30px;
+            color: #c8cdd8;
+          ">
+            Для доступа к планировщику необходимо авторизоваться.<br><br>
+            Используйте команду <code style="
+              background: #0a0e14;
+              padding: 4px 8px;
+              border-radius: 4px;
+              color: #4fc3b0;
+              font-family: 'JetBrains Mono', monospace;
+            ">/esr</code> в игре.
+          </p>
+        </div>
+      </div>
+    `;
+  }
+
+  if (!(await isAuthorized())) {
+    showAuthRequired();
+    return;
+  }
+
+  // ============== ГЕНЕРАЦИЯ ВРЕМЕННЫХ СЛОТОВ ==============
+  function generateTimeSlots() {
+    const slots = [];
+    for (let hour = 0; hour < 24; hour++) {
+      for (let minute = 0; minute < 60; minute += 20) {
+        const h = String(hour).padStart(2, '0');
+        const m = String(minute).padStart(2, '0');
+        slots.push(`${h}:${m}`);
+      }
+    }
+    return slots;
+  }
+
+  // ============== РАБОТА С ДАННЫМИ ==============
+  let schedule = {}; // { "14:20": { author: "Имя", title: "Название" } }
+
+  async function loadSchedule() {
+    try {
+      // В реальном приложении здесь был бы запрос к воркеру для получения данных из KV
+      // Пока используем localStorage для демонстрации
+      const saved = localStorage.getItem('event_schedule');
+      if (saved) {
+        schedule = JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error('Failed to load schedule:', e);
+      schedule = {};
+    }
+  }
+
+  async function saveSchedule() {
+    try {
+      // В реальном приложении здесь был бы запрос к воркеру для сохранения в KV
+      localStorage.setItem('event_schedule', JSON.stringify(schedule));
+    } catch (e) {
+      console.error('Failed to save schedule:', e);
+    }
+  }
+
+  // ============== ОТРИСОВКА СЛОТОВ ==============
+  function renderSlots() {
+    const grid = $('planGrid');
+    const slots = generateTimeSlots();
+    
+    grid.innerHTML = slots.map(time => {
+      const booking = schedule[time];
+      const isBooked = Boolean(booking);
+      
+      return `
+        <div class="time-slot ${isBooked ? 'booked' : ''}" data-time="${time}">
+          <div class="time-code">${time}</div>
+          ${isBooked ? `<div class="slot-label">Забронировано</div>` : `<div class="slot-label">Доступно</div>`}
+          ${isBooked ? `
+            <div class="slot-info">
+              <div class="slot-info-author">👤 ${escapeHtml(booking.author)}</div>
+              <div class="slot-info-title">📋 ${escapeHtml(booking.title)}</div>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }).join('');
+
+    // Добавляем обработчики событий
+    grid.querySelectorAll('.time-slot').forEach(slot => {
+      slot.addEventListener('click', (e) => handleSlotClick(e, slot));
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ============== МОДАЛЬНОЕ ОКНО ==============
+  let currentTime = null;
+
+  function handleSlotClick(e, slot) {
+    currentTime = slot.dataset.time;
+    const booking = schedule[currentTime];
+    const modal = $('inputModal');
+    const rect = slot.getBoundingClientRect();
+    
+    // Позиционируем модальное окно рядом с ячейкой
+    modal.style.left = Math.min(rect.left, window.innerWidth - 360) + 'px';
+    modal.style.top = Math.min(rect.top, window.innerHeight - 200) + 'px';
+    
+    if (booking) {
+      $('modalHeader').textContent = `Время: ${currentTime}`;
+      $('eventTitle').value = booking.title;
+      $('btnDelete').style.display = 'inline-block';
+    } else {
+      $('modalHeader').textContent = `Забронировать: ${currentTime}`;
+      $('eventTitle').value = '';
+      $('btnDelete').style.display = 'none';
+    }
+    
+    modal.classList.add('show');
+    $('eventTitle').focus();
+  }
+
+  function closeModal() {
+    $('inputModal').classList.remove('show');
+    currentTime = null;
+  }
+
+  async function saveBooking() {
+    const title = $('eventTitle').value.trim();
+    if (!title) {
+      alert('Введите название мероприятия');
+      return;
+    }
+    
+    schedule[currentTime] = {
+      author: getUserName(),
+      title: title,
+      timestamp: new Date().toISOString()
+    };
+    
+    await saveSchedule();
+    renderSlots();
+    closeModal();
+  }
+
+  async function deleteBooking() {
+    if (!confirm('Удалить бронирование?')) return;
+    
+    delete schedule[currentTime];
+    await saveSchedule();
+    renderSlots();
+    closeModal();
+  }
+
+  // Обработчики кнопок модального окна
+  $('btnSave').addEventListener('click', saveBooking);
+  $('btnCancel').addEventListener('click', closeModal);
+  $('btnDelete').addEventListener('click', deleteBooking);
+  
+  // Закрытие по Escape
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModal();
+  });
+
+  // Закрытие по клику вне модального окна
+  document.addEventListener('click', (e) => {
+    const modal = $('inputModal');
+    if (modal.classList.contains('show') && !modal.contains(e.target) && !e.target.closest('.time-slot')) {
+      closeModal();
+    }
+  });
+
+  // ============== ИНИЦИАЛИЗАЦИЯ ==============
+  async function init() {
+    $('loadingState').style.display = 'block';
+    $('app').style.display = 'none';
+    
+    await loadSchedule();
+    
+    $('loadingState').style.display = 'none';
+    $('app').style.display = 'block';
+    
+    renderSlots();
+  }
+
+  init();
+})();
+</script>
+
+</body>
+</html>
