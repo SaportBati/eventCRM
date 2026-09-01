@@ -138,7 +138,8 @@
   // ============== АВТОРИЗАЦИЯ ЧЕРЕЗ HWID ==============
   function getHwidFromUrl() {
     const hash = window.location.hash;
-    const match = hash.match(/[?&]hwid=([^&/#]+)/);
+    // Ищем &hwid= в hash (не путать с query параметрами)
+    const match = hash.match(/&hwid=([^&/#]+)/);
     return match ? decodeURIComponent(match[1]) : null;
   }
 
@@ -461,7 +462,9 @@
   function parseHash(){
     const h = location.hash.replace(/^#\//,'');
     if(!h){ return { name:'authors', param:null }; }
-    const parts = h.split('/');
+    // Убираем параметры (&hwid=...) из hash перед парсингом
+    const cleanH = h.split('&')[0];
+    const parts = cleanH.split('/');
     if(parts[0] === 'author' && parts[1]){ return { name:'author', param: decodeURIComponent(parts[1]) }; }
     return { name:'authors', param:null };
   }
