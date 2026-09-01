@@ -152,31 +152,64 @@
     }
   }
 
-  function isAuthorized() {
-    // Проверяем localStorage - если уже авторизован ранее
-    const savedHwid = localStorage.getItem('authorized_hwid');
-    if (savedHwid) {
-      return true;
+  async function verifyHwidWithServer(hwid) {
+    // Проверяем HWID на сервере (в D1 whitelist)
+    try {
+      const response = await fetch(WORKER_URL + '/check-hwid?hwid=' + encodeURIComponent(hwid));
+      const data = await response.json();
+      return data.ok && data.allowed === true;
+    } catch (e) {
+      console.error('[Auth] Failed to verify HWID with server:', e);
+      return false;
     }
+  }
 
-    // Проверяем URL - если есть HWID в ссылке
+  async function isAuthorized() {
+    // Сначала проверяем и очищаем URL, если есть HWID
     const hwidFromUrl = getHwidFromUrl();
     if (hwidFromUrl) {
-      // Сохраняем в localStorage для постоянной авторизации
-      localStorage.setItem('authorized_hwid', hwidFromUrl);
-      console.log('[Auth] HWID saved to localStorage:', hwidFromUrl);
+      console.log('[Auth] HWID found in URL, verifying with server...');
       
-      // Удаляем HWID из URL для безопасности
+      // Проверяем HWID на сервере
+      const isValid = await verifyHwidWithServer(hwidFromUrl);
+      
+      if (isValid) {
+        // Сохраняем в localStorage только если валидный
+        localStorage.setItem('authorized_hwid', hwidFromUrl);
+        console.log('[Auth] HWID verified and saved to localStorage');
+      } else {
+        // Если невалидный - удаляем из localStorage (на случай если был)
+        localStorage.removeItem('authorized_hwid');
+        console.error('[Auth] HWID not in whitelist!');
+      }
+      
+      // ВСЕГДА удаляем HWID из URL (даже при повторном входе)
       cleanHwidFromUrl();
       
+      return isValid;
+    }
+
+    // Если HWID в URL нет, проверяем localStorage
+    const savedHwid = localStorage.getItem('authorized_hwid');
+    if (savedHwid) {
+      // Дополнительная проверка: валиден ли сохраненный HWID
+      // (на случай если его удалили из whitelist)
+      const isValid = await verifyHwidWithServer(savedHwid);
+      if (!isValid) {
+        // HWID больше не в whitelist - удаляем
+        localStorage.removeItem('authorized_hwid');
+        console.error('[Auth] Saved HWID is no longer valid');
+        return false;
+      }
       return true;
     }
 
     return false;
   }
 
-  function checkAuth() {
-    if (!isAuthorized()) {
+  async function checkAuth() {
+    const authorized = await isAuthorized();
+    if (!authorized) {
       showAuthRequired();
       return false;
     }
@@ -244,10 +277,13 @@
     `;
   }
 
-  // Проверяем авторизацию при загрузке
-  if (!checkAuth()) {
-    return; // Останавливаем выполнение, если не авторизован
-  }
+  // Проверяем авторизацию при загрузке (async)
+  checkAuth().then(authorized => {
+    if (!authorized) {
+      return; // Останавливаем выполнение, если не авторизован
+    }
+    // Продолжаем загрузку если авторизован
+  });
   // ==================================================
 
   // ---------------- motion helpers ----------------
