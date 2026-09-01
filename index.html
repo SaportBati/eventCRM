@@ -120,6 +120,91 @@
 
   const $ = (id) => document.getElementById(id);
 
+  // ============== АВТОРИЗАЦИЯ ЧЕРЕЗ HWID ==============
+  function getHwidFromUrl() {
+    const hash = window.location.hash;
+    const match = hash.match(/[?&]hwid=([^&]+)/);
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  function checkAuth() {
+    const hwid = getHwidFromUrl();
+    if (!hwid) {
+      showAuthRequired();
+      return false;
+    }
+    // Сохраняем HWID в sessionStorage для текущей сессии
+    sessionStorage.setItem('authorized_hwid', hwid);
+    return true;
+  }
+
+  function showAuthRequired() {
+    document.body.innerHTML = `
+      <div style="
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        background: linear-gradient(135deg, #0a0e14 0%, #1a1f2e 100%);
+        color: #ece7da;
+        font-family: 'Inter', sans-serif;
+        text-align: center;
+        padding: 20px;
+      ">
+        <div style="
+          background: rgba(26, 31, 46, 0.8);
+          border: 2px solid #4fc3b0;
+          border-radius: 16px;
+          padding: 40px;
+          max-width: 500px;
+          box-shadow: 0 8px 32px rgba(79, 195, 176, 0.2);
+        ">
+          <h1 style="
+            font-family: 'Cinzel', serif;
+            font-size: 32px;
+            margin-bottom: 20px;
+            color: #4fc3b0;
+          ">🔒 Требуется авторизация</h1>
+          <p style="
+            font-size: 16px;
+            line-height: 1.6;
+            margin-bottom: 30px;
+            color: #c8cdd8;
+          ">
+            Для доступа к CRM необходимо авторизоваться через скрипт.<br><br>
+            Используйте команду <code style="
+              background: #0a0e14;
+              padding: 4px 8px;
+              border-radius: 4px;
+              color: #4fc3b0;
+              font-family: 'JetBrains Mono', monospace;
+            ">/esr</code> в игре для авторизации.
+          </p>
+          <div style="
+            background: rgba(79, 195, 176, 0.1);
+            border-left: 3px solid #4fc3b0;
+            padding: 15px;
+            text-align: left;
+            border-radius: 4px;
+            font-size: 14px;
+            color: #929aab;
+          ">
+            <strong style="color: #4fc3b0;">Как это работает:</strong><br>
+            Команда /esr автоматически откроет браузер с вашим уникальным HWID,<br>
+            предоставляя доступ к системе отчётов.
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // Проверяем авторизацию при загрузке
+  if (!checkAuth()) {
+    return; // Останавливаем выполнение, если не авторизован
+  }
+  // ==================================================
+
   // ---------------- motion helpers ----------------
   function revealStagger(selectorOrEls, opts){
     if(!hasGsap || reduceMotion) return;
