@@ -123,18 +123,34 @@
   // ============== АВТОРИЗАЦИЯ ЧЕРЕЗ HWID ==============
   function getHwidFromUrl() {
     const hash = window.location.hash;
-    const match = hash.match(/[?&]hwid=([^&]+)/);
+    const match = hash.match(/[?&]hwid=([^&/#]+)/);
     return match ? decodeURIComponent(match[1]) : null;
   }
 
+  function isAuthorized() {
+    // Проверяем localStorage - если уже авторизован ранее
+    const savedHwid = localStorage.getItem('authorized_hwid');
+    if (savedHwid) {
+      return true;
+    }
+
+    // Проверяем URL - если есть HWID в ссылке
+    const hwidFromUrl = getHwidFromUrl();
+    if (hwidFromUrl) {
+      // Сохраняем в localStorage для постоянной авторизации
+      localStorage.setItem('authorized_hwid', hwidFromUrl);
+      console.log('[Auth] HWID saved to localStorage:', hwidFromUrl);
+      return true;
+    }
+
+    return false;
+  }
+
   function checkAuth() {
-    const hwid = getHwidFromUrl();
-    if (!hwid) {
+    if (!isAuthorized()) {
       showAuthRequired();
       return false;
     }
-    // Сохраняем HWID в sessionStorage для текущей сессии
-    sessionStorage.setItem('authorized_hwid', hwid);
     return true;
   }
 
@@ -191,8 +207,8 @@
             color: #929aab;
           ">
             <strong style="color: #4fc3b0;">Как это работает:</strong><br>
-            Команда /esr автоматически откроет браузер с вашим уникальным HWID,<br>
-            предоставляя доступ к системе отчётов.
+            Команда /esr автоматически откроет браузер с вашим профилем.<br>
+            После первого входа вы будете авторизованы постоянно.
           </div>
         </div>
       </div>
