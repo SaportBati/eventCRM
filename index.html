@@ -141,11 +141,27 @@
     // Проверяем HWID на сервере (в D1 whitelist)
     try {
       const response = await fetch(WORKER_URL + '/check-hwid?hwid=' + encodeURIComponent(hwid));
+      
+      if (!response.ok) {
+        console.error('[Auth] Server returned error:', response.status);
+        return false;
+      }
+      
       const data = await response.json();
-      return data.ok && data.allowed === true;
+      console.log('[Auth] Server response:', data);
+      
+      // Проверяем результат
+      if (data.ok === true && data.allowed === true) {
+        console.log('[Auth] ✅ HWID is in whitelist');
+        return true;
+      } else {
+        console.error('[Auth] ❌ HWID is NOT in whitelist');
+        return false;
+      }
     } catch (e) {
       console.error('[Auth] Failed to verify HWID with server:', e);
-      return false;
+      // При ошибке сети - разрешаем доступ (offline mode)
+      return true;
     }
   }
 
