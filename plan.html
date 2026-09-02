@@ -153,6 +153,11 @@
     transition: all 0.2s ease;
   }
 
+  .input-modal-buttons button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
   .btn-save {
     background: #4fc3b0;
     color: #0a0e14;
@@ -212,11 +217,15 @@
     </div>
   </div>
 
-  <nav class="nav-tabs">
-    <a href="index.html">Дашборд</a>
-    <a href="author.html">Авторы</a>
-    <a href="plan.html" class="active">Планировщик</a>
-  </nav>
+  <div class="nav-tabs-wrap">
+    <nav class="nav-tabs">
+      <a href="index.html">Дашборд</a>
+      <a href="author.html">Авторы</a>
+    </nav>
+    <nav class="nav-tabs nav-tabs-secondary">
+      <a href="plan.html" class="active">Планировщик</a>
+    </nav>
+  </div>
 </header>
 
 <div class="hero-spacer" aria-hidden="true"></div>
@@ -251,9 +260,15 @@
 <script>
 (async function(){
   const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
-  const PLAN_KV_KEY = "event_plan_schedule"; // Ключ для хранения в KV
-  
+  const REFRESH_INTERVAL_MS = 20000; // фоновое обновление, чтобы видеть чужие брони без перезагрузки
+
   const $ = (id) => document.getElementById(id);
+
+  // Заполняются после успешной авторизации: HWID нужен на каждый запрос
+  // к /plan (сервер сверяет его с whitelist), а автора сервер сам
+  // подставляет по HWID — клиент не может задать чужое имя.
+  let currentHwid = null;
+  let currentAuthor = 'Аноним';
 
   // ============== АВТОРИЗАЦИЯ ==============
   function getHwidFromUrl() {
@@ -270,49 +285,53 @@
     }
   }
 
-  async function isHwidAllowedByServer(hwid) {
+  async function checkHwidServer(hwid) {
     try {
       const resp = await fetch(WORKER_URL + '/check-hwid', {
         headers: { 'X-HWID': hwid }
       });
-      if (!resp.ok) return false;
+      if (!resp.ok) return { allowed: false, author: null };
       const data = await resp.json();
-      return Boolean(data && data.ok && data.allowed);
+      return {
+        allowed: Boolean(data && data.ok && data.allowed),
+        author: (data && data.author) || null
+      };
     } catch (e) {
       console.error('[Auth] HWID check failed:', e);
-      return false;
+      return { allowed: false, author: null };
     }
   }
 
   async function isAuthorized() {
     const hwidFromUrl = getHwidFromUrl();
     if (hwidFromUrl) {
-      const allowed = await isHwidAllowedByServer(hwidFromUrl);
+      const result = await checkHwidServer(hwidFromUrl);
       cleanHwidFromUrl();
-      if (!allowed) {
+      if (!result.allowed) {
         localStorage.removeItem('authorized_hwid');
         return false;
       }
       localStorage.setItem('authorized_hwid', hwidFromUrl);
+      currentHwid = hwidFromUrl;
+      currentAuthor = result.author || 'Аноним';
+      localStorage.setItem('user_name', currentAuthor);
       return true;
     }
 
     const savedHwid = localStorage.getItem('authorized_hwid');
     if (savedHwid) {
-      const allowed = await isHwidAllowedByServer(savedHwid);
-      if (!allowed) {
+      const result = await checkHwidServer(savedHwid);
+      if (!result.allowed) {
         localStorage.removeItem('authorized_hwid');
         return false;
       }
+      currentHwid = savedHwid;
+      currentAuthor = result.author || 'Аноним';
+      localStorage.setItem('user_name', currentAuthor);
       return true;
     }
 
     return false;
-  }
-
-  function getUserName() {
-    // Получаем имя пользователя из localStorage (должно быть сохранено при авторизации)
-    return localStorage.getItem('user_name') || 'Аноним';
   }
 
   function showAuthRequired() {
@@ -381,29 +400,23 @@
     return slots;
   }
 
-  // ============== РАБОТА С ДАННЫМИ ==============
+  // ============== РАБОТА С ДАННЫМИ (общие через воркер/D1) ==============
   let schedule = {}; // { "14:20": { author: "Имя", title: "Название" } }
 
   async function loadSchedule() {
     try {
-      // В реальном приложении здесь был бы запрос к воркеру для получения данных из KV
-      // Пока используем localStorage для демонстрации
-      const saved = localStorage.getItem('event_schedule');
-      if (saved) {
-        schedule = JSON.parse(saved);
-      }
+      const resp = await fetch(WORKER_URL + '/plan');
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.error || 'unknown_error');
+
+      const next = {};
+      (data.slots || []).forEach(s => {
+        next[s.time] = { author: s.author, title: s.title };
+      });
+      schedule = next;
     } catch (e) {
       console.error('Failed to load schedule:', e);
-      schedule = {};
-    }
-  }
-
-  async function saveSchedule() {
-    try {
-      // В реальном приложении здесь был бы запрос к воркеру для сохранения в KV
-      localStorage.setItem('event_schedule', JSON.stringify(schedule));
-    } catch (e) {
-      console.error('Failed to save schedule:', e);
     }
   }
 
@@ -411,11 +424,11 @@
   function renderSlots() {
     const grid = $('planGrid');
     const slots = generateTimeSlots();
-    
+
     grid.innerHTML = slots.map(time => {
       const booking = schedule[time];
       const isBooked = Boolean(booking);
-      
+
       return `
         <div class="time-slot ${isBooked ? 'booked' : ''}" data-time="${time}">
           <div class="time-code">${time}</div>
@@ -448,21 +461,23 @@
     const booking = schedule[currentTime];
     const modal = $('inputModal');
     const rect = slot.getBoundingClientRect();
-    
+
     // Позиционируем модальное окно рядом с ячейкой
     modal.style.left = Math.min(rect.left, window.innerWidth - 360) + 'px';
     modal.style.top = Math.min(rect.top, window.innerHeight - 200) + 'px';
-    
+
     if (booking) {
       $('modalHeader').textContent = `Время: ${currentTime}`;
       $('eventTitle').value = booking.title;
-      $('btnDelete').style.display = 'inline-block';
+      // Удалить может только автор брони (сервер это тоже проверит);
+      // прячем кнопку для чужих броней, чтобы не путать пользователя.
+      $('btnDelete').style.display = booking.author === currentAuthor ? 'inline-block' : 'none';
     } else {
       $('modalHeader').textContent = `Забронировать: ${currentTime}`;
       $('eventTitle').value = '';
       $('btnDelete').style.display = 'none';
     }
-    
+
     modal.classList.add('show');
     $('eventTitle').focus();
   }
@@ -472,38 +487,79 @@
     currentTime = null;
   }
 
+  function setModalBusy(busy) {
+    $('btnSave').disabled = busy;
+    $('btnDelete').disabled = busy;
+    $('btnCancel').disabled = busy;
+  }
+
   async function saveBooking() {
     const title = $('eventTitle').value.trim();
     if (!title) {
       alert('Введите название мероприятия');
       return;
     }
-    
-    schedule[currentTime] = {
-      author: getUserName(),
-      title: title,
-      timestamp: new Date().toISOString()
-    };
-    
-    await saveSchedule();
-    renderSlots();
-    closeModal();
+
+    setModalBusy(true);
+    try {
+      const resp = await fetch(WORKER_URL + '/plan', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-HWID': currentHwid
+        },
+        body: JSON.stringify({ time: currentTime, title })
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        alert('Не удалось сохранить бронирование: ' + (data.error || 'неизвестная ошибка'));
+        return;
+      }
+      schedule[currentTime] = { author: data.author, title: data.title };
+      renderSlots();
+      closeModal();
+    } catch (e) {
+      console.error('Failed to save booking:', e);
+      alert('Не удалось связаться с сервером. Проверьте соединение и попробуйте ещё раз.');
+    } finally {
+      setModalBusy(false);
+    }
   }
 
   async function deleteBooking() {
     if (!confirm('Удалить бронирование?')) return;
-    
-    delete schedule[currentTime];
-    await saveSchedule();
-    renderSlots();
-    closeModal();
+
+    setModalBusy(true);
+    try {
+      const resp = await fetch(WORKER_URL + '/plan/delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-HWID': currentHwid
+        },
+        body: JSON.stringify({ time: currentTime })
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        alert('Не удалось удалить бронирование: ' + (data.error || 'неизвестная ошибка'));
+        return;
+      }
+      delete schedule[currentTime];
+      renderSlots();
+      closeModal();
+    } catch (e) {
+      console.error('Failed to delete booking:', e);
+      alert('Не удалось связаться с сервером. Проверьте соединение и попробуйте ещё раз.');
+    } finally {
+      setModalBusy(false);
+    }
   }
 
   // Обработчики кнопок модального окна
   $('btnSave').addEventListener('click', saveBooking);
   $('btnCancel').addEventListener('click', closeModal);
   $('btnDelete').addEventListener('click', deleteBooking);
-  
+
   // Закрытие по Escape
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeModal();
@@ -517,16 +573,26 @@
     }
   });
 
+  // ============== ФОНОВОЕ ОБНОВЛЕНИЕ ==============
+  // Подхватываем брони других пользователей без перезагрузки страницы.
+  // Пропускаем обновление, пока открыто модальное окно, чтобы не сбить
+  // ввод текущего пользователя.
+  setInterval(async () => {
+    if ($('inputModal').classList.contains('show')) return;
+    await loadSchedule();
+    renderSlots();
+  }, REFRESH_INTERVAL_MS);
+
   // ============== ИНИЦИАЛИЗАЦИЯ ==============
   async function init() {
     $('loadingState').style.display = 'block';
     $('app').style.display = 'none';
-    
+
     await loadSchedule();
-    
+
     $('loadingState').style.display = 'none';
     $('app').style.display = 'block';
-    
+
     renderSlots();
   }
 
