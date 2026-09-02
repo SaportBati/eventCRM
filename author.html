@@ -140,20 +140,44 @@
 
   const $ = (id) => document.getElementById(id);
 
-  // ============== АВТОРИЗАЦИЯ ЧЕРЕЗ HWID ==============
-  function getHwidFromUrl() {
+  // ============== АВТОРИЗАЦИЯ ЧЕРЕЗ ОДНОРАЗОВЫЙ ТОКЕН ==============
+  // /esr в игре больше не кладёт голый HWID в URL (он был бы фактически
+  // вечным ключом, если кто-то увидит ссылку в истории браузера/логах).
+  // Вместо этого воркер выдаёт одноразовый токен, живущий максимум 1
+  // минуту (см. /gen-token в worker.js). Мы обмениваем его на HWID через
+  // /check-token один раз, а сам HWID уже сохраняем в localStorage —
+  // именно поэтому повторные заходы на сайт (без /esr) продолжают
+  // работать как раньше, через сохранённый HWID.
+  function getTokenFromUrl() {
     const hash = window.location.hash;
-    // Ищем &hwid= в hash (не путать с query параметрами)
-    const match = hash.match(/&hwid=([^&/#]+)/);
+    const match = hash.match(/&token=([^&/#]+)/);
     return match ? decodeURIComponent(match[1]) : null;
   }
 
-  function cleanHwidFromUrl() {
-    // Удаляем &hwid=... из URL после сохранения
+  function cleanTokenFromUrl() {
     const hash = window.location.hash;
-    if (hash.includes('&hwid=')) {
-      const cleanHash = hash.replace(/&hwid=[^&/#]+/, '');
+    if (hash.includes('&token=')) {
+      const cleanHash = hash.replace(/&token=[^&/#]+/, '');
       window.history.replaceState(null, '', cleanHash || '#/');
+    }
+  }
+
+  // Одноразовый обмен: токен -> HWID. Токен гасится на сервере при первом
+  // же успешном (или неуспешном, но валидном) обращении, поэтому повторно
+  // им воспользоваться нельзя, даже если ссылка куда-то "утекла".
+  async function exchangeTokenForHwid(token) {
+    try {
+      const resp = await fetch(WORKER_URL + '/check-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token })
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      return (data && data.ok && data.hwid) ? data.hwid : null;
+    } catch (e) {
+      console.error('[Auth] Token exchange failed:', e);
+      return null;
     }
   }
 
@@ -174,28 +198,31 @@
   }
 
   async function isAuthorized() {
-    // Сначала проверяем и очищаем URL, если есть HWID
-    const hwidFromUrl = getHwidFromUrl();
-    if (hwidFromUrl) {
-      console.log('[Auth] HWID found in URL:', hwidFromUrl);
-      const allowed = await isHwidAllowedByServer(hwidFromUrl);
+    // Если в URL есть одноразовый токен от /esr — обмениваем его на HWID.
+    const tokenFromUrl = getTokenFromUrl();
+    if (tokenFromUrl) {
+      console.log('[Auth] Login token found in URL');
+      const hwid = await exchangeTokenForHwid(tokenFromUrl);
 
-      // ВСЕГДА удаляем HWID из URL (даже при неудачной попытке входа)
-      cleanHwidFromUrl();
+      // ВСЕГДА удаляем токен из URL (даже при неудачном обмене) — он
+      // одноразовый и хранить его дальше в адресной строке незачем.
+      cleanTokenFromUrl();
 
-      if (!allowed) {
-        console.log('[Auth] HWID rejected by server');
+      if (!hwid) {
+        console.log('[Auth] Token exchange rejected by server');
         localStorage.removeItem('authorized_hwid');
         return false;
       }
 
-      localStorage.setItem('authorized_hwid', hwidFromUrl);
-      console.log('[Auth] HWID verified and saved to localStorage');
+      localStorage.setItem('authorized_hwid', hwid);
+      console.log('[Auth] HWID obtained via token and saved to localStorage');
       return true;
     }
 
-    // Если HWID в URL нет, проверяем сохранённый и тоже сверяем с сервером
-    // (на случай, если он был отозван из вайтлиста после сохранения)
+    // Токена в URL нет — проверяем сохранённый HWID и тоже сверяем с
+    // сервером (на случай, если он был отозван из вайтлиста после
+    // сохранения). Это и есть тот путь, по которому сайт продолжает
+    // работать при обычных повторных заходах, без /esr.
     const savedHwid = localStorage.getItem('authorized_hwid');
     if (savedHwid) {
       const allowed = await isHwidAllowedByServer(savedHwid);

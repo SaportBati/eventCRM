@@ -343,18 +343,44 @@
   let currentHwid = null;
   let currentAuthor = 'Аноним';
 
-  // ============== АВТОРИЗАЦИЯ ==============
-  function getHwidFromUrl() {
+  // ============== АВТОРИЗАЦИЯ ЧЕРЕЗ ОДНОРАЗОВЫЙ ТОКЕН ==============
+  // /esr в игре больше не кладёт голый HWID в URL (он был бы фактически
+  // вечным ключом, если кто-то увидит ссылку в истории браузера/логах).
+  // Вместо этого воркер выдаёт одноразовый токен, живущий максимум 1
+  // минуту (см. /gen-token в worker.js). Мы обмениваем его на HWID через
+  // /check-token один раз, а сам HWID уже сохраняем в localStorage —
+  // именно поэтому повторные заходы на сайт (без /esr) продолжают
+  // работать как раньше, через сохранённый HWID.
+  function getTokenFromUrl() {
     const hash = window.location.hash;
-    const match = hash.match(/&hwid=([^&/#]+)/);
+    const match = hash.match(/&token=([^&/#]+)/);
     return match ? decodeURIComponent(match[1]) : null;
   }
 
-  function cleanHwidFromUrl() {
+  function cleanTokenFromUrl() {
     const hash = window.location.hash;
-    if (hash.includes('&hwid=')) {
-      const cleanHash = hash.replace(/&hwid=[^&/#]+/, '');
+    if (hash.includes('&token=')) {
+      const cleanHash = hash.replace(/&token=[^&/#]+/, '');
       window.history.replaceState(null, '', cleanHash || '#/');
+    }
+  }
+
+  // Одноразовый обмен: токен -> HWID. Токен гасится на сервере при первом
+  // же успешном (или неуспешном, но валидном) обращении, поэтому повторно
+  // им воспользоваться нельзя, даже если ссылка куда-то "утекла".
+  async function exchangeTokenForHwid(token) {
+    try {
+      const resp = await fetch(WORKER_URL + '/check-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token })
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      return (data && data.ok && data.hwid) ? data.hwid : null;
+    } catch (e) {
+      console.error('[Auth] Token exchange failed:', e);
+      return null;
     }
   }
 
@@ -376,21 +402,35 @@
   }
 
   async function isAuthorized() {
-    const hwidFromUrl = getHwidFromUrl();
-    if (hwidFromUrl) {
-      const result = await checkHwidServer(hwidFromUrl);
-      cleanHwidFromUrl();
+    // Если в URL есть одноразовый токен от /esr — обмениваем его на HWID.
+    const tokenFromUrl = getTokenFromUrl();
+    if (tokenFromUrl) {
+      const hwid = await exchangeTokenForHwid(tokenFromUrl);
+
+      // ВСЕГДА удаляем токен из URL (даже при неудачном обмене) — он
+      // одноразовый и хранить его дальше в адресной строке незачем.
+      cleanTokenFromUrl();
+
+      if (!hwid) {
+        localStorage.removeItem('authorized_hwid');
+        return false;
+      }
+
+      const result = await checkHwidServer(hwid);
       if (!result.allowed) {
         localStorage.removeItem('authorized_hwid');
         return false;
       }
-      localStorage.setItem('authorized_hwid', hwidFromUrl);
-      currentHwid = hwidFromUrl;
+      localStorage.setItem('authorized_hwid', hwid);
+      currentHwid = hwid;
       currentAuthor = result.author || 'Аноним';
       localStorage.setItem('user_name', currentAuthor);
       return true;
     }
 
+    // Токена в URL нет — проверяем сохранённый HWID (это путь, по
+    // которому сайт продолжает работать при обычных повторных заходах,
+    // без /esr).
     const savedHwid = localStorage.getItem('authorized_hwid');
     if (savedHwid) {
       const result = await checkHwidServer(savedHwid);
