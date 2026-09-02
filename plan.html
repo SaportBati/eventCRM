@@ -70,37 +70,25 @@
     margin-top: 4px;
   }
 
-  .slot-info {
-    display: none;
-    position: absolute;
-    top: calc(100% + 8px);
-    left: 50%;
-    transform: translateX(-50%);
-    background: #1b202a;
-    border: 1px solid #4fc3b0;
-    border-radius: 8px;
-    padding: 12px;
-    width: 200px;
-    z-index: 1000;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-    pointer-events: none;
-  }
-
-  .time-slot.booked:hover .slot-info {
-    display: block;
-  }
-
-  .slot-info-author {
-    font-size: 13px;
-    color: #d4a24e;
+  .slot-owner {
+    margin-top: 6px;
+    font-size: 11px;
     font-weight: 600;
-    margin-bottom: 6px;
+    color: #d4a24e;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
   }
 
-  .slot-info-title {
-    font-size: 14px;
-    color: #ece7da;
-    line-height: 1.4;
+  .slot-owner-title {
+    margin-top: 2px;
+    font-size: 10.5px;
+    color: #929aab;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
   }
 
   .input-modal {
@@ -256,6 +244,7 @@
 
 <div class="input-modal" id="inputModal">
   <div class="input-modal-header" id="modalHeader">Забронировать время</div>
+  <div id="modalViewInfo" style="display:none; margin-bottom:16px; font-size:14px; color:#c8cdd8; line-height:1.7;"></div>
   <input type="text" id="eventTitle" placeholder="Название мероприятия" maxlength="100">
   <div class="input-modal-buttons">
     <button class="btn-delete" id="btnDelete" style="display: none;">Удалить</button>
@@ -435,14 +424,12 @@
       const isBooked = Boolean(booking);
 
       return `
-        <div class="time-slot ${isBooked ? 'booked' : ''}" data-time="${time}">
+        <div class="time-slot ${isBooked ? 'booked' : ''}" data-time="${time}" ${isBooked ? `title="${escapeHtml(booking.author)}: ${escapeHtml(booking.title)}"` : ''}>
           <div class="time-code">${time}</div>
           ${isBooked ? `<div class="slot-label">Занято</div>` : `<div class="slot-label">Доступно</div>`}
           ${isBooked ? `
-            <div class="slot-info">
-              <div class="slot-info-author">👤 ${escapeHtml(booking.author)}</div>
-              <div class="slot-info-title">📋 ${escapeHtml(booking.title)}</div>
-            </div>
+            <div class="slot-owner">👤 ${escapeHtml(booking.author)}</div>
+            <div class="slot-owner-title">${escapeHtml(booking.title)}</div>
           ` : ''}
         </div>
       `;
@@ -471,20 +458,34 @@
     modal.style.left = Math.min(rect.left, window.innerWidth - 360) + 'px';
     modal.style.top = Math.min(rect.top, window.innerHeight - 200) + 'px';
 
-    if (booking) {
+    const isOwn = Boolean(booking) && booking.author === currentAuthor;
+    const isForeign = Boolean(booking) && !isOwn;
+
+    // Чужую бронь можно только посмотреть: поле ввода и кнопка
+    // "Сохранить" скрыты, редактировать/перезаписать нельзя (сервер
+    // это тоже проверяет и отклонит попытку).
+    $('modalViewInfo').style.display = isForeign ? 'block' : 'none';
+    $('eventTitle').style.display = isForeign ? 'none' : 'block';
+    $('btnSave').style.display = isForeign ? 'none' : 'inline-block';
+    $('btnDelete').style.display = isOwn ? 'inline-block' : 'none';
+    $('btnCancel').textContent = isForeign ? 'Закрыть' : 'Отмена';
+
+    if (isForeign) {
+      $('modalHeader').textContent = `Время: ${currentTime}`;
+      $('modalViewInfo').innerHTML = `
+        <div><strong style="color:#d4a24e;">👤 ${escapeHtml(booking.author)}</strong></div>
+        <div style="margin-top:6px;">📋 ${escapeHtml(booking.title)}</div>
+      `;
+    } else if (isOwn) {
       $('modalHeader').textContent = `Время: ${currentTime}`;
       $('eventTitle').value = booking.title;
-      // Удалить может только автор брони (сервер это тоже проверит);
-      // прячем кнопку для чужих броней, чтобы не путать пользователя.
-      $('btnDelete').style.display = booking.author === currentAuthor ? 'inline-block' : 'none';
     } else {
       $('modalHeader').textContent = `Забронировать: ${currentTime}`;
       $('eventTitle').value = '';
-      $('btnDelete').style.display = 'none';
     }
 
     modal.classList.add('show');
-    $('eventTitle').focus();
+    if (!isForeign) $('eventTitle').focus();
   }
 
   function closeModal() {
