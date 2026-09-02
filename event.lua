@@ -17,6 +17,41 @@ local function to_utf8(str)
     return str
 end
 
+-- ==================== Отдельный крупный шрифт для тоста ====================
+-- SetWindowFontScale просто растягивает уже отрисованный битмап шрифта (мыло),
+-- поэтому для чёткого крупного текста строим настоящий шрифт нужного размера.
+local TOAST_FONT_SIZE = 27.0
+local toast_font = nil
+
+local FONT_CANDIDATES = {
+    (os.getenv("WINDIR") or "C:\\Windows") .. "\\Fonts\\segoeui.ttf",
+    (os.getenv("WINDIR") or "C:\\Windows") .. "\\Fonts\\tahoma.ttf",
+    (os.getenv("WINDIR") or "C:\\Windows") .. "\\Fonts\\arial.ttf",
+}
+
+imgui.OnInitialize(function()
+    local ok_io, imgui_io = pcall(imgui.GetIO)
+    if not ok_io or not imgui_io then return end
+
+    local ranges = nil
+    local ok_ranges, cyr = pcall(function() return imgui_io.Fonts:GetGlyphRangesCyrillic() end)
+    if ok_ranges then ranges = cyr end
+
+    for _, path in ipairs(FONT_CANDIDATES) do
+        local f = io.open(path, "rb")
+        if f then
+            f:close()
+            local ok_font, font = pcall(function()
+                return imgui_io.Fonts:AddFontFromFileTTF(path, TOAST_FONT_SIZE, nil, ranges)
+            end)
+            if ok_font and font then
+                toast_font = font
+                break
+            end
+        end
+    end
+end)
+
 local TAG = "{05ff12}[{05f911}E{04f310}v{04ed0f}e{03e70e}n{03e10d}t{02db0c}S{02d50b}c{01cf0a}a{01c909}n{00a609}]"
 
 local function es_msg(text, body_color)
@@ -31,7 +66,7 @@ local active_worker_url = WORKER_URL_PRIMARY
 local WORKER_TOKEN = "SET_YOUR_OWN_SECRET_HERE"
 local SCAN_RADIUS  = 200.0
 
-local SCRIPT_VERSION      = "1.1"
+local SCRIPT_VERSION      = "1.2"
 local VERSION_CHECK_URL   = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/version.txt"
 local UPDATE_DOWNLOAD_URL = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/event.lua"
 
@@ -136,32 +171,9 @@ local function stop_detection_loop()
     scanning_active = false
 end
 
-local function get_timestamp()
-    local t = os.time() + 10800
-    return os.date("!%Y-%m-%d_%H-%M-%S", t)
-end
-
 local function get_readable_time()
     local t = os.time() + 10800
     return os.date("!%d.%m.%Y %H:%M:%S", t)
-end
-
-local function parse_iso8601_utc(str)
-    if not str then return nil end
-    local y, mo, d, h, mi, se = str:match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
-    if not y then return nil end
-    return {
-        year = tonumber(y), month = tonumber(mo), day = tonumber(d),
-        hour = tonumber(h), min = tonumber(mi), sec = tonumber(se)
-    }
-end
-
-local function utc_table_to_local_epoch(tbl)
-    local now = os.time()
-    local utcdiff = os.difftime(now, os.time(os.date("!*t", now)))
-    local ok, t = pcall(os.time, tbl)
-    if not ok or not t then return nil end
-    return t + utcdiff
 end
 
 local function is_dir(path)
@@ -340,6 +352,42 @@ local function d1_report_worker(channel, worker_url, token, payload_json, hwid)
         end
     end
     channel:push({ ok = false, err = err_detail })
+end
+
+local function gen_token_worker(channel, worker_url, token, hwid)
+    local requests = require("requests")
+    local json     = require("dkjson")
+
+    local ok, resp = pcall(requests.request, "POST", worker_url .. "/gen-token", {
+        headers = {
+            ["Content-Type"] = "application/json",
+            ["X-Auth-Token"] = token,
+            ["X-HWID"]       = hwid,
+            ["User-Agent"]   = "SAMP-EventScan/1.4"
+        },
+        data = "{}"
+    })
+
+    if not ok or not resp then
+        channel:push({ ok = false, err = "network_fail" })
+        return
+    end
+
+    if resp.status_code == 200 then
+        local pok, res_data = pcall(json.decode, resp.text)
+        if pok and res_data and res_data.ok and res_data.token then
+            channel:push({ ok = true, token = res_data.token })
+        else
+            channel:push({ ok = false, err = "json_parse_fail" })
+        end
+    else
+        local err_detail = "http_" .. tostring(resp.status_code)
+        local pok, res_data = pcall(json.decode, resp.text or "")
+        if pok and res_data and res_data.error then
+            err_detail = err_detail .. " (" .. tostring(res_data.error) .. ")"
+        end
+        channel:push({ ok = false, err = err_detail })
+    end
 end
 
 local function d1_last_report_worker(channel, worker_url, token)
@@ -1062,13 +1110,6 @@ local TAG_GRADIENT = {
     { "a", "01cf0a" }, { "n", "01c909" }, { "]", "00a609" }
 }
 
-local function draw_gradient_tag()
-    for i, part in ipairs(TAG_GRADIENT) do
-        if i > 1 then imgui.SameLine(0, 0) end
-        imgui.TextColored(hexcol(part[2]), part[1])
-    end
-end
-
 local function center_text(text, color)
     local avail_w = imgui.GetContentRegionAvail().x
     local text_w = imgui.CalcTextSize(text).x
@@ -1082,22 +1123,360 @@ local function center_text(text, color)
     end
 end
 
-local function center_gradient_header(label_text)
-    local total_w = 0
-    for _, part in ipairs(TAG_GRADIENT) do
-        total_w = total_w + imgui.CalcTextSize(part[1]).x
-    end
-    total_w = total_w + imgui.CalcTextSize(' ').x + imgui.CalcTextSize(label_text).x
+-- ==================== Всплывающее уведомление снизу экрана ====================
+-- Тост с анимацией
+local toast_visible = imgui_new.bool(false)
+local toast_state = {
+    text       = "",
+    color      = nil,
+    anim_time  = 0,      -- время анимации (0 до 1)
+    start_tick = 0,      -- время начала показа
+    closing    = false   -- флаг закрытия
+}
 
-    local avail_w = imgui.GetContentRegionAvail().x
-    if total_w < avail_w then
-        imgui.SetCursorPosX(imgui.GetCursorPosX() + (avail_w - total_w) / 2)
-    end
+local TOAST_ANIM_DURATION = 0.3  -- длительность анимации появления в секундах
+local TOAST_CLOSE_DURATION = 0.25 -- длительность анимации закрытия в секундах
 
-    draw_gradient_tag()
-    imgui.SameLine()
-    imgui.Text(label_text)
+local function show_toast(text, color_hex)
+    -- Не показываем тост, если открыто окно настроек
+    if screens_path_open[0] then
+        return
+    end
+    
+    toast_state.text    = text
+    toast_state.color   = color_hex and hexcol(color_hex) or hexcol(GREEN_BRIGHT)
+    toast_state.closing = false
+    
+    -- Если окно уже показывается, просто обновляем текст без перезапуска анимации
+    if not toast_visible[0] then
+        toast_state.anim_time  = 0
+        toast_state.start_tick = os.clock()
+        toast_visible[0]       = true
+    end
 end
+
+local function hide_toast()
+    if toast_visible[0] and not toast_state.closing then
+        toast_state.closing    = true
+        toast_state.start_tick = os.clock()
+        toast_state.anim_time  = 0
+    end
+end
+
+-- ==================== Всплывающее уведомление для /ess ====================
+local ess_toast_visible = imgui_new.bool(false)
+local ess_toast_state = {
+    text       = "",
+    color      = nil,
+    anim_time  = 0,
+    start_tick = 0,
+    closing    = false
+}
+
+local ESS_TOAST_ANIM_DURATION = 0.3
+local ESS_TOAST_CLOSE_DURATION = 0.25
+
+local function show_ess_toast(text, color_hex)
+    if screens_path_open[0] then
+        return
+    end
+    
+    ess_toast_state.text    = text
+    ess_toast_state.color   = color_hex and hexcol(color_hex) or hexcol(GREEN_BRIGHT)
+    ess_toast_state.closing = false
+    
+    if not ess_toast_visible[0] then
+        ess_toast_state.anim_time  = 0
+        ess_toast_state.start_tick = os.clock()
+        ess_toast_visible[0]       = true
+    end
+end
+
+local function hide_ess_toast()
+    if ess_toast_visible[0] and not ess_toast_state.closing then
+        ess_toast_state.closing    = true
+        ess_toast_state.start_tick = os.clock()
+        ess_toast_state.anim_time  = 0
+    end
+end
+
+-- Уменьшенный размер окна без иконок
+local TOAST_PAD = 12
+
+imgui.OnFrame(function() return toast_visible[0] and not screens_path_open[0] end, function()
+    -- Обновляем время анимации
+    local elapsed = os.clock() - toast_state.start_tick
+    
+    local anim_progress
+    if toast_state.closing then
+        -- Анимация закрытия
+        toast_state.anim_time = math.min(elapsed / TOAST_CLOSE_DURATION, 1.0)
+        
+        -- Если анимация закрытия завершена, скрываем окно
+        if toast_state.anim_time >= 1.0 then
+            toast_visible[0] = false
+            toast_state.closing = false
+            return
+        end
+        
+        -- Инвертируем прогресс для закрытия (от 1 до 0)
+        anim_progress = 1.0 - toast_state.anim_time
+    else
+        -- Анимация открытия
+        toast_state.anim_time = math.min(elapsed / TOAST_ANIM_DURATION, 1.0)
+        anim_progress = toast_state.anim_time
+    end
+    
+    -- Функция easing для плавной анимации (ease-out для открытия, ease-in для закрытия)
+    local function ease_out_cubic(t)
+        return 1 - math.pow(1 - t, 3)
+    end
+    
+    local function ease_in_cubic(t)
+        return t * t * t
+    end
+    
+    local eased_progress
+    if toast_state.closing then
+        eased_progress = ease_in_cubic(anim_progress)
+    else
+        eased_progress = ease_out_cubic(anim_progress)
+    end
+    
+    -- Увеличенное окно для большого текста
+    local win_w, win_h = 160, 40
+    local imgui_io = imgui.GetIO()
+    local screen_w = imgui_io.DisplaySize.x
+    local screen_h = imgui_io.DisplaySize.y
+
+    -- Опускаем почти к самому низу экрана (оставляем только 8 пикселей от края)
+    local final_pos_y = screen_h - win_h - 8
+    
+    -- Анимация: окно появляется/исчезает снизу
+    local start_offset = 30  -- начальное смещение вниз
+    local pos_y = final_pos_y + start_offset * (1 - eased_progress)
+    
+    -- Анимация прозрачности
+    local alpha = 0.97 * eased_progress
+
+    imgui.SetNextWindowPos(imgui.ImVec2(screen_w / 2, pos_y), imgui.Cond.Always, imgui.ImVec2(0.5, 0))
+    imgui.SetNextWindowSize(imgui.ImVec2(win_w, win_h), imgui.Cond.Always)
+    imgui.SetNextWindowBgAlpha(alpha)
+
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 18)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 2.0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(10, 8))
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))  -- прозрачный фон
+    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(
+        hexcol(GREEN_MID).x,
+        hexcol(GREEN_MID).y,
+        hexcol(GREEN_MID).z,
+        eased_progress
+    ))
+
+    imgui.Begin('##es_toast', nil,
+        imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoMove +
+        imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoFocusOnAppearing +
+        imgui.WindowFlags.NoInputs + imgui.WindowFlags.NoNav)
+
+    -- Рисуем внутреннюю рамку для создания промежутка между фоном и обводкой
+    local draw_list = imgui.GetWindowDrawList()
+    local win_pos = imgui.GetWindowPos()
+    local win_size = imgui.GetWindowSize()
+    local gap = 3  -- промежуток в пикселях
+    local inner_rounding = 15  -- скругление внутренней рамки (меньше чем внешнее)
+    
+    -- Рисуем внутренний скругленный прямоугольник (фон)
+    draw_list:AddRectFilled(
+        imgui.ImVec2(win_pos.x + gap, win_pos.y + gap),
+        imgui.ImVec2(win_pos.x + win_size.x - gap, win_pos.y + win_size.y - gap),
+        imgui.ColorConvertFloat4ToU32(imgui.ImVec4(0.06, 0.09, 0.06, alpha)),
+        inner_rounding
+    )
+
+    imgui.Dummy(imgui.ImVec2(0, 4))
+
+    -- Тост без градиентного тега - просто текст
+
+    imgui.Spacing()
+
+    -- Крупный шрифт для тоста (настоящий шрифт нужного размера, без растяжки)
+    local using_toast_font = toast_font ~= nil
+    if using_toast_font then
+        imgui.PushFont(toast_font)
+    end
+
+    -- Упрощенная отрисовка текста без иконок
+    local text = toast_state.text
+    local text_color = toast_state.color
+    local win_size = imgui.GetWindowSize()
+    local line_h = imgui.GetTextLineHeight()
+    
+    -- Центрируем текст по вертикали
+    imgui.SetCursorPosY((win_size.y - line_h) / 2)
+    
+    -- Центрируем текст по горизонтали
+    local text_w = imgui.CalcTextSize(text).x
+    local avail_w = win_size.x - (TOAST_PAD * 2)
+    if text_w < avail_w then
+        imgui.SetCursorPosX(TOAST_PAD + (avail_w - text_w) / 2)
+    else
+        imgui.SetCursorPosX(TOAST_PAD)
+    end
+    
+    imgui.PushTextWrapPos(win_size.x - TOAST_PAD)
+    
+    if text_color then
+        -- Применяем альфа-канал к цвету текста для анимации
+        imgui.TextColored(imgui.ImVec4(
+            text_color.x,
+            text_color.y,
+            text_color.z,
+            eased_progress
+        ), text)
+    else
+        imgui.TextColored(imgui.ImVec4(1, 1, 1, eased_progress), text)
+    end
+    
+    imgui.PopTextWrapPos()
+
+    if using_toast_font then
+        imgui.PopFont()
+    end
+
+    imgui.End()
+
+    imgui.PopStyleColor(2)
+    imgui.PopStyleVar(3)
+end).HideCursor = true  -- Отключаем курсор мыши для тоста
+
+-- ==================== Окно для отправки отчёта /ess ====================
+imgui.OnFrame(function() return ess_toast_visible[0] and not screens_path_open[0] end, function()
+    local elapsed = os.clock() - ess_toast_state.start_tick
+    
+    local anim_progress
+    if ess_toast_state.closing then
+        ess_toast_state.anim_time = math.min(elapsed / ESS_TOAST_CLOSE_DURATION, 1.0)
+        
+        if ess_toast_state.anim_time >= 1.0 then
+            ess_toast_visible[0] = false
+            ess_toast_state.closing = false
+            return
+        end
+        
+        anim_progress = 1.0 - ess_toast_state.anim_time
+    else
+        ess_toast_state.anim_time = math.min(elapsed / ESS_TOAST_ANIM_DURATION, 1.0)
+        anim_progress = ess_toast_state.anim_time
+    end
+    
+    local function ease_out_cubic(t)
+        return 1 - math.pow(1 - t, 3)
+    end
+    
+    local function ease_in_cubic(t)
+        return t * t * t
+    end
+    
+    local eased_progress
+    if ess_toast_state.closing then
+        eased_progress = ease_in_cubic(anim_progress)
+    else
+        eased_progress = ease_out_cubic(anim_progress)
+    end
+    
+    local win_w, win_h = 200, 40
+    local imgui_io = imgui.GetIO()
+    local screen_w = imgui_io.DisplaySize.x
+    local screen_h = imgui_io.DisplaySize.y
+
+    local final_pos_y = screen_h - win_h - 8
+    local start_offset = 30
+    local pos_y = final_pos_y + start_offset * (1 - eased_progress)
+    local alpha = 0.97 * eased_progress
+
+    imgui.SetNextWindowPos(imgui.ImVec2(screen_w / 2, pos_y), imgui.Cond.Always, imgui.ImVec2(0.5, 0))
+    imgui.SetNextWindowSize(imgui.ImVec2(win_w, win_h), imgui.Cond.Always)
+    imgui.SetNextWindowBgAlpha(alpha)
+
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 18)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 2.0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(10, 8))
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))  -- прозрачный фон
+    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(
+        hexcol(GREEN_MID).x,
+        hexcol(GREEN_MID).y,
+        hexcol(GREEN_MID).z,
+        eased_progress
+    ))
+
+    imgui.Begin('##ess_toast', nil,
+        imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoMove +
+        imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoFocusOnAppearing +
+        imgui.WindowFlags.NoInputs + imgui.WindowFlags.NoNav)
+
+    -- Рисуем внутреннюю рамку для создания промежутка между фоном и обводкой
+    local draw_list = imgui.GetWindowDrawList()
+    local win_pos = imgui.GetWindowPos()
+    local win_size = imgui.GetWindowSize()
+    local gap = 3  -- промежуток в пикселях
+    local inner_rounding = 15  -- скругление внутренней рамки (меньше чем внешнее)
+    
+    -- Рисуем внутренний скругленный прямоугольник (фон)
+    draw_list:AddRectFilled(
+        imgui.ImVec2(win_pos.x + gap, win_pos.y + gap),
+        imgui.ImVec2(win_pos.x + win_size.x - gap, win_pos.y + win_size.y - gap),
+        imgui.ColorConvertFloat4ToU32(imgui.ImVec4(0.06, 0.09, 0.06, alpha)),
+        inner_rounding
+    )
+
+    imgui.Dummy(imgui.ImVec2(0, 4))
+    imgui.Spacing()
+
+    local using_toast_font = toast_font ~= nil
+    if using_toast_font then
+        imgui.PushFont(toast_font)
+    end
+
+    local text = ess_toast_state.text
+    local text_color = ess_toast_state.color
+    local win_size = imgui.GetWindowSize()
+    local line_h = imgui.GetTextLineHeight()
+    
+    imgui.SetCursorPosY((win_size.y - line_h) / 2)
+    
+    local text_w = imgui.CalcTextSize(text).x
+    local avail_w = win_size.x - (TOAST_PAD * 2)
+    if text_w < avail_w then
+        imgui.SetCursorPosX(TOAST_PAD + (avail_w - text_w) / 2)
+    else
+        imgui.SetCursorPosX(TOAST_PAD)
+    end
+    
+    imgui.PushTextWrapPos(win_size.x - TOAST_PAD)
+    
+    if text_color then
+        imgui.TextColored(imgui.ImVec4(
+            text_color.x,
+            text_color.y,
+            text_color.z,
+            eased_progress
+        ), text)
+    else
+        imgui.TextColored(imgui.ImVec4(1, 1, 1, eased_progress), text)
+    end
+    
+    imgui.PopTextWrapPos()
+
+    if using_toast_font then
+        imgui.PopFont()
+    end
+
+    imgui.End()
+
+    imgui.PopStyleColor(2)
+    imgui.PopStyleVar(3)
+end).HideCursor = true  -- Отключаем курсор мыши для ess тоста
 
 local ok_cdef_ansi = pcall(function()
     ffi.cdef[[
@@ -1439,11 +1818,11 @@ local SCREENSHOT_MAX_WAIT      = 4000
 local function capture_and_upload_screenshot(callback)
 
     if not screens_root_folder then
-        es_msg("Папка со скриншотами ещё не настроена — заполните открытое окно (или дождитесь автопоиска).", "FFAA00")
+        show_toast(u8("Папка не настроена"), "FFAA00")
         return callback(nil)
     end
     if not get_hwid() then
-        es_msg("HWID ещё определяется в фоне — попробуй через пару секунд.", "FFAA00")
+        show_toast(u8("Hwid"), "FFAA00")
         return callback(nil)
     end
     local root_folder = screens_root_folder
@@ -1481,7 +1860,6 @@ local function capture_and_upload_screenshot(callback)
                         file:close()
                         if new_content and extract_screenshot_filename(new_content) then
                             chat_notice_shown = true
-                            es_msg("Сделал скриншот, отправляю его на сервер....")
                         end
                     end
                 end
@@ -1494,12 +1872,10 @@ local function capture_and_upload_screenshot(callback)
             end
         end
 
-        if not chat_notice_shown then
-            es_msg("Сделал скриншот, отправляю его на сервер....")
-        end
-
         if not target_file then
-            es_msg("Скриншот не найден (тайм-аут)!", "FF4444")
+            show_toast(u8("Ошибка!"), "FF4444")
+            wait(2000)
+            hide_toast()
             return callback(nil)
         end
 
@@ -1512,24 +1888,36 @@ local function capture_and_upload_screenshot(callback)
             wait(150)
         end
         if not file then
-            es_msg("Не удалось прочесть файл скриншота с диска!", "FF4444")
+            show_toast(u8("Ошибка!"), "FF4444")
+            wait(2000)
+            hide_toast()
             return callback(nil)
         end
         local binary_data = file:read("*a")
         file:close()
+
+        show_toast(u8("Сканирую..."), GREEN_BRIGHT)
 
         local hwid_value = get_hwid()
         local result = try_worker_urls(screenshot_upload_worker, function(url)
             return { WORKER_TOKEN, binary_data, hwid_value }
         end, 20000)
         if result and result.ok then
+            show_toast(u8("Готово!"), GREEN_BRIGHT)
+            wait(2000)
+            hide_toast()
             callback(result.url)
         else
             local err = result and result.err or "timeout"
             if is_hwid_error(err) then
-                notify_hwid_denied()
+                copy_to_clipboard(get_hwid() or "UNKNOWN")
+                show_toast(u8("Hwid"), "FF4444")
+                wait(2000)
+                hide_toast()
             else
-                es_msg("Ошибка загрузки скриншота: " .. tostring(err), "FF4444")
+                show_toast(u8("Ошибка!"), "FF4444")
+                wait(2000)
+                hide_toast()
             end
             callback(nil)
         end
@@ -1539,24 +1927,34 @@ end
 local function send_report_to_d1(payload_json, on_done)
     local hwid = get_hwid()
     if not hwid then
-
         es_msg("HWID ещё определяется в фоне — попробуй отправить отчёт через пару секунд.", "FFAA00")
         if on_done then on_done(false) end
         return
     end
+
+    show_ess_toast(u8("Отправка..."), GREEN_BRIGHT)
 
     lua_thread.create(function()
         local result = try_worker_urls(d1_report_worker, function(url)
             return { WORKER_TOKEN, payload_json, hwid }
         end, 20000)
         if result and result.ok then
+            show_ess_toast(u8("Готово!"), GREEN_BRIGHT)
+            wait(2000)
+            hide_ess_toast()
             es_msg("Отчёт успешно сохранён в базу данных!")
             if on_done then on_done(true) end
         else
             local err = result and result.err or "timeout"
             if is_hwid_error(err) then
+                show_ess_toast(u8("Ошибка HWID!"), "FF4444")
+                wait(2000)
+                hide_ess_toast()
                 notify_hwid_denied()
             else
+                show_ess_toast(u8("Ошибка!"), "FF4444")
+                wait(2000)
+                hide_ess_toast()
                 es_msg("Ошибка сохранения отчёта: " .. tostring(err), "FF4444")
             end
             if on_done then on_done(false) end
@@ -1663,6 +2061,7 @@ function main()
     es_msg("{FFFF00}/ess Название Ник_Победителя {FFFFFF}(Отправить отчет)")
     es_msg("{FFFF00}/eslast {FFFFFF}(время с последнего отчёта)")
     es_msg("{FFFF00}/esr {FFFFFF}(открыть CRM-дашборд твоих отчётов)")
+    es_msg("{FFFF00}/esp {FFFFFF}(открыть планировщик событий)")
     es_msg("{FFFF00}/esreset {FFFFFF}(сбросить кеш папки скриншотов)")
     
     sampRegisterChatCommand("es", function()
@@ -1684,7 +2083,6 @@ function main()
             })
 
             table.insert(pending_reports, table.concat(lines, "\n"))
-            es_msg(string.format("Скан добавлен в очередь (%d шт). Отправить всё: {FFFF00}/ess", #pending_reports))
         end)
     end)
 
@@ -1814,19 +2212,138 @@ function main()
     end)
 
     sampRegisterChatCommand("esr", function()
-        local nick = get_local_nickname()
-        local url = "https://saportbati.github.io/eventCRM/author.html#/author/" .. nick
+        local hwid = get_hwid()
+        if not hwid then
+            es_msg("HWID ещё не определён. Попробуй через пару секунд.", "FFAA00")
+            return
+        end
 
-        local channel = effil.channel()
-        local thr = effil.thread(open_url_worker)(channel, url)
-        active_threads[#active_threads+1] = thr
+        local nick = get_local_nickname()
+        if not nick or nick == "Unknown" then
+            es_msg("Не удалось определить твой ник. Попробуй ещё раз.", "FF4444")
+            return
+        end
 
         lua_thread.create(function()
+            -- Вместо того, чтобы класть голый HWID прямо в URL (он бы
+            -- фактически стал вечным ключом, если ссылка где-то
+            -- засветится — в истории браузера, логах и т.п.), сначала
+            -- просим воркер выдать одноразовый токен, который истекает
+            -- максимум через минуту и гасится сразу после первого же
+            -- использования сайтом.
+            local gen_result = try_worker_urls(gen_token_worker, function(url)
+                return { WORKER_TOKEN, hwid }
+            end, 15000)
+
+            if not gen_result or not gen_result.ok or not gen_result.token then
+                local err = gen_result and gen_result.err or "timeout"
+                if is_hwid_error(err) then
+                    notify_hwid_denied()
+                else
+                    es_msg("Не удалось сгенерировать ссылку для входа: " .. tostring(err), "FF4444")
+                end
+                return
+            end
+
+            -- Используем & вместо ? для параметров внутри hash
+            local url = "https://saportbati.github.io/eventCRM/author.html#/author/" .. nick .. "&token=" .. gen_result.token
+
+            local channel = effil.channel()
+            local thr = effil.thread(open_url_worker)(channel, url)
+            active_threads[#active_threads+1] = thr
+
             local result = wait_for_channel(channel, 5000)
             if result and result.ok then
-                es_msg("Открываю CRM-дашборд: {FFFF00}" .. url)
+                es_msg("Открываю твой профиль в CRM ({FFFF00}" .. nick .. "{FFFFFF})...")
             else
-                es_msg("Не удалось открыть браузер (" .. tostring(result and result.err or "timeout") .. "). Ссылка: {FFFF00}" .. url, "FF4444")
+                es_msg("Не удалось открыть браузер (" .. tostring(result and result.err or "timeout") .. ").", "FF4444")
+                es_msg("Ссылка для ручного открытия (действует не дольше 1 минуты): {FFFF00}" .. url)
+            end
+        end)
+    end)
+
+    -- Секретная версия /esr: тот же одноразовый токен (гасится за 1
+    -- использование и живёт не дольше минуты), но вместо открытия
+    -- браузера ссылка просто копируется в буфер обмена — удобно, если
+    -- нужно вставить её куда-то самому (другой браузер, устройство и т.п.),
+    -- не запуская локальный.
+    sampRegisterChatCommand("-esr", function()
+        local hwid = get_hwid()
+        if not hwid then
+            es_msg("HWID ещё не определён. Попробуй через пару секунд.", "FFAA00")
+            return
+        end
+
+        local nick = get_local_nickname()
+        if not nick or nick == "Unknown" then
+            es_msg("Не удалось определить твой ник. Попробуй ещё раз.", "FF4444")
+            return
+        end
+
+        lua_thread.create(function()
+            local gen_result = try_worker_urls(gen_token_worker, function(url)
+                return { WORKER_TOKEN, hwid }
+            end, 15000)
+
+            if not gen_result or not gen_result.ok or not gen_result.token then
+                local err = gen_result and gen_result.err or "timeout"
+                if is_hwid_error(err) then
+                    notify_hwid_denied()
+                else
+                    es_msg("Не удалось сгенерировать ссылку для входа: " .. tostring(err), "FF4444")
+                end
+                return
+            end
+
+            local url = "https://saportbati.github.io/eventCRM/author.html#/author/" .. nick .. "&token=" .. gen_result.token
+
+            if copy_to_clipboard(url) then
+                es_msg("Ссылка для входа скопирована в буфер обмена (действует не дольше 1 минуты, {FFFF00}" .. nick .. "{FFFFFF}).")
+            else
+                es_msg("Не удалось скопировать в буфер обмена. Ссылка (действует не дольше 1 минуты): {FFFF00}" .. url, "FF4444")
+            end
+        end)
+    end)
+
+    -- Открывает планировщик (plan.html) тем же способом, что и /esr для
+    -- author.html: одноразовый токен, гасится за 1 использование, живёт
+    -- не дольше минуты. plan.html не использует путь в hash (нет ника в
+    -- URL) — авторизация и определение автора там целиком идут по HWID
+    -- на сервере после обмена токена.
+    sampRegisterChatCommand("esp", function()
+        local hwid = get_hwid()
+        if not hwid then
+            es_msg("HWID ещё не определён. Попробуй через пару секунд.", "FFAA00")
+            return
+        end
+
+        lua_thread.create(function()
+            local gen_result = try_worker_urls(gen_token_worker, function(url)
+                return { WORKER_TOKEN, hwid }
+            end, 15000)
+
+            if not gen_result or not gen_result.ok or not gen_result.token then
+                local err = gen_result and gen_result.err or "timeout"
+                if is_hwid_error(err) then
+                    notify_hwid_denied()
+                else
+                    es_msg("Не удалось сгенерировать ссылку для входа: " .. tostring(err), "FF4444")
+                end
+                return
+            end
+
+            local url = "https://saportbati.github.io/eventCRM/plan.html#/&token=" .. gen_result.token
+
+            local channel = effil.channel()
+            local thr = effil.thread(open_url_worker)(channel, url)
+            active_threads[#active_threads+1] = thr
+
+            local result = wait_for_channel(channel, 5000)
+            if result and result.ok then
+                es_msg("Открываю планировщик CRM...")
+            else
+                es_msg("Не удалось открыть браузер (" .. tostring(result and result.err or "timeout") .. ").", "FF4444")
+                es_msg("Ссылка для ручного открытия (действует не дольше 1 минуты): {FFFF00}" .. url)
             end
         end)
     end)
