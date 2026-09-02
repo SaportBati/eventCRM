@@ -17,6 +17,49 @@ local function to_utf8(str)
     return str
 end
 
+local SCRIPT_DIR = thisScript().path:match("^(.*[\\/])") or ""
+
+-- ==================== Кастомный шрифт для всех окон ====================
+-- Шрифт качается один раз с GitHub и кешируется рядом со скриптом; если по
+-- какой-то причине скачать/загрузить его не удалось, всё молча откатывается
+-- на дефолтный/системные шрифты — окна не ломаются.
+local CUSTOM_FONT_URL   = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/eventscrin.ttf"
+local CUSTOM_FONT_FILE  = SCRIPT_DIR .. "eventscrin.ttf"
+local CUSTOM_FONT_SIZE  = 16.0
+local custom_font       = nil
+
+local function is_custom_font_cached()
+    local f = io.open(CUSTOM_FONT_FILE, "rb")
+    if not f then return false end
+    f:close()
+    return true
+end
+
+-- Однократная (блокирующая) загрузка при первом запуске — файла ещё нет,
+-- а грузить настоящий шрифт окна должны уже к моменту imgui.OnInitialize.
+-- В дальнейших запусках файл уже лежит на диске и сеть не трогаем вообще.
+local function ensure_custom_font_downloaded()
+    if is_custom_font_cached() then return true end
+
+    local ok_req, requests = pcall(require, "requests")
+    if not ok_req or not requests then return false end
+
+    local ok_get, resp = pcall(requests.get, CUSTOM_FONT_URL, {
+        headers = { ["User-Agent"] = "SAMP-EventScan/1.4" }
+    })
+    if not ok_get or not resp or resp.status_code ~= 200 or not resp.text or #resp.text == 0 then
+        return false
+    end
+
+    local file = io.open(CUSTOM_FONT_FILE, "wb")
+    if not file then return false end
+    file:write(resp.text)
+    file:close()
+    return true
+end
+
+ensure_custom_font_downloaded()
+
 -- ==================== Отдельный крупный шрифт для тоста ====================
 -- SetWindowFontScale просто растягивает уже отрисованный битмап шрифта (мыло),
 -- поэтому для чёткого крупного текста строим настоящий шрифт нужного размера.
@@ -37,16 +80,40 @@ imgui.OnInitialize(function()
     local ok_ranges, cyr = pcall(function() return imgui_io.Fonts:GetGlyphRangesCyrillic() end)
     if ok_ranges then ranges = cyr end
 
-    for _, path in ipairs(FONT_CANDIDATES) do
-        local f = io.open(path, "rb")
-        if f then
-            f:close()
-            local ok_font, font = pcall(function()
-                return imgui_io.Fonts:AddFontFromFileTTF(path, TOAST_FONT_SIZE, nil, ranges)
-            end)
-            if ok_font and font then
-                toast_font = font
-                break
+    -- Кастомный шрифт (eventscrin.ttf) как шрифт по умолчанию для всех окон
+    if is_custom_font_cached() then
+        local ok_cf, font = pcall(function()
+            return imgui_io.Fonts:AddFontFromFileTTF(CUSTOM_FONT_FILE, CUSTOM_FONT_SIZE, nil, ranges)
+        end)
+        if ok_cf and font then
+            custom_font        = font
+            imgui_io.FontDefault = font
+        end
+    end
+
+    -- Крупный шрифт для тоста: тот же кастомный шрифт, увеличенный,
+    -- либо системный как запасной вариант, если кастомный не загрузился
+    if is_custom_font_cached() then
+        local ok_tf, font = pcall(function()
+            return imgui_io.Fonts:AddFontFromFileTTF(CUSTOM_FONT_FILE, TOAST_FONT_SIZE, nil, ranges)
+        end)
+        if ok_tf and font then
+            toast_font = font
+        end
+    end
+
+    if not toast_font then
+        for _, path in ipairs(FONT_CANDIDATES) do
+            local f = io.open(path, "rb")
+            if f then
+                f:close()
+                local ok_font, font = pcall(function()
+                    return imgui_io.Fonts:AddFontFromFileTTF(path, TOAST_FONT_SIZE, nil, ranges)
+                end)
+                if ok_font and font then
+                    toast_font = font
+                    break
+                end
             end
         end
     end
@@ -84,7 +151,6 @@ local scanning_active      = false
 
 local active_threads = {}
 
-local SCRIPT_DIR    = thisScript().path:match("^(.*[\\/])") or ""
 local LOCAL_DB_FILE  = SCRIPT_DIR .. "event_scan_reports.json"
 local SCREENS_CACHE_FILE = SCRIPT_DIR .. "screens_path_cache.txt"
 local HWID_CACHE_FILE = SCRIPT_DIR .. "hwid_cache.txt"
@@ -174,6 +240,50 @@ end
 local function get_readable_time()
     local t = os.time() + 10800
     return os.date("!%d.%m.%Y %H:%M:%S", t)
+end
+
+-- ==================== Хелперы дат/времени для планировщика (/espl) ====================
+
+local DOW_LABELS_RU = { "Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб" }
+
+local function format_date_ymd(t)
+    return os.date("%Y-%m-%d", t)
+end
+
+-- 5 дней назад + сегодня + 3 дня вперёд = 9 дней, как в plan.html
+local function espl_get_date_range()
+    local days = {}
+    local now_tbl = os.date("*t", os.time())
+    now_tbl.hour, now_tbl.min, now_tbl.sec = 0, 0, 0
+    local midnight = os.time(now_tbl)
+    for offset = -5, 3 do
+        table.insert(days, midnight + offset * 86400)
+    end
+    return days
+end
+
+-- Слоты по 20 минут, 24 часа = 72 слота на день, как в plan.html
+local function espl_generate_time_slots()
+    local slots = {}
+    for hour = 0, 23 do
+        for minute = 0, 59, 20 do
+            table.insert(slots, string.format("%02d:%02d", hour, minute))
+        end
+    end
+    return slots
+end
+
+local function espl_slot_epoch(date_str, time_str)
+    local y, m, d = date_str:match("(%d+)-(%d+)-(%d+)")
+    local h, mi = time_str:match("(%d+):(%d+)")
+    return os.time({
+        year = tonumber(y), month = tonumber(m), day = tonumber(d),
+        hour = tonumber(h), min = tonumber(mi), sec = 0
+    })
+end
+
+local function espl_is_past(date_str, time_str)
+    return espl_slot_epoch(date_str, time_str) < os.time()
 end
 
 local function is_dir(path)
@@ -418,6 +528,119 @@ local function d1_last_report_worker(channel, worker_url, token)
     end
 end
 
+-- ==================== Воркеры планировщика (/espl, аналог plan.html) ====================
+
+local function plan_fetch_worker(channel, worker_url, date)
+    local requests = require("requests")
+    local json     = require("dkjson")
+
+    local ok, resp = pcall(requests.get, worker_url .. "/plan?date=" .. date, {
+        headers = { ["User-Agent"] = "SAMP-EventScan/1.4" }
+    })
+
+    if not ok or not resp then
+        channel:push({ ok = false, err = "network_fail" })
+        return
+    end
+
+    if resp.status_code == 200 then
+        local pok, data = pcall(json.decode, resp.text)
+        if pok and data and data.ok then
+            channel:push({ ok = true, slots = data.slots or {} })
+        else
+            channel:push({ ok = false, err = "json_parse_fail" })
+        end
+    else
+        channel:push({ ok = false, err = "http_" .. tostring(resp.status_code) })
+    end
+end
+
+local function plan_save_worker(channel, worker_url, hwid, date, time, title)
+    local requests = require("requests")
+    local json     = require("dkjson")
+
+    local payload = json.encode({ date = date, time = time, title = title })
+
+    local ok, resp = pcall(requests.request, "POST", worker_url .. "/plan", {
+        headers = {
+            ["Content-Type"] = "application/json",
+            ["X-HWID"]       = hwid,
+            ["User-Agent"]   = "SAMP-EventScan/1.4"
+        },
+        data = payload
+    })
+
+    if not ok or not resp then
+        channel:push({ ok = false, err = "network_fail" })
+        return
+    end
+
+    local pok, data = pcall(json.decode, resp.text or "")
+    if resp.status_code == 200 and pok and data and data.ok then
+        channel:push({ ok = true, author = data.author, title = data.title })
+    else
+        local err_detail = (pok and data and data.error) or ("http_" .. tostring(resp.status_code))
+        channel:push({ ok = false, err = err_detail })
+    end
+end
+
+local function plan_delete_worker(channel, worker_url, hwid, date, time)
+    local requests = require("requests")
+    local json     = require("dkjson")
+
+    local payload = json.encode({ date = date, time = time })
+
+    local ok, resp = pcall(requests.request, "POST", worker_url .. "/plan/delete", {
+        headers = {
+            ["Content-Type"] = "application/json",
+            ["X-HWID"]       = hwid,
+            ["User-Agent"]   = "SAMP-EventScan/1.4"
+        },
+        data = payload
+    })
+
+    if not ok or not resp then
+        channel:push({ ok = false, err = "network_fail" })
+        return
+    end
+
+    local pok, data = pcall(json.decode, resp.text or "")
+    if resp.status_code == 200 and pok and data and data.ok then
+        channel:push({ ok = true })
+    else
+        local err_detail = (pok and data and data.error) or ("http_" .. tostring(resp.status_code))
+        channel:push({ ok = false, err = err_detail })
+    end
+end
+
+local function check_hwid_worker(channel, worker_url, hwid)
+    local requests = require("requests")
+    local json     = require("dkjson")
+
+    local ok, resp = pcall(requests.get, worker_url .. "/check-hwid", {
+        headers = {
+            ["X-HWID"]     = hwid,
+            ["User-Agent"] = "SAMP-EventScan/1.4"
+        }
+    })
+
+    if not ok or not resp then
+        channel:push({ ok = false, err = "network_fail" })
+        return
+    end
+
+    if resp.status_code == 200 then
+        local pok, data = pcall(json.decode, resp.text)
+        if pok and data and data.ok then
+            channel:push({ ok = true, allowed = data.allowed, author = data.author })
+        else
+            channel:push({ ok = false, err = "json_parse_fail" })
+        end
+    else
+        channel:push({ ok = false, err = "http_" .. tostring(resp.status_code) })
+    end
+end
+
 local function version_check_worker(channel, url)
     local requests = require("requests")
 
@@ -617,25 +840,30 @@ local function wait_for_channel(channel, timeout_ms)
     return nil
 end
 
+local PRIMARY_WORKER_TIMEOUT_MS = 2000
+
 local function try_worker_urls(worker_fn, build_args, timeout_ms)
-    local function attempt(url)
+    local function attempt(url, attempt_timeout_ms)
         local channel = effil.channel()
         local args = build_args(url)
         local thr = effil.thread(worker_fn)(channel, url, unpack(args))
         active_threads[#active_threads+1] = thr
-        return wait_for_channel(channel, timeout_ms)
+        return wait_for_channel(channel, attempt_timeout_ms)
     end
 
-    local result = attempt(active_worker_url)
+    local has_fallback    = active_worker_url ~= WORKER_URL_FALLBACK
+    local primary_timeout = has_fallback and math.min(PRIMARY_WORKER_TIMEOUT_MS, timeout_ms) or timeout_ms
+
+    local result = attempt(active_worker_url, primary_timeout)
     if result and result.ok then
         return result
     end
 
-    if active_worker_url ~= WORKER_URL_FALLBACK then
+    if has_fallback then
         print(string.format("[EventScan] Основной Worker (%s) не ответил: %s. Пробую резервный (%s)...",
             active_worker_url, tostring(result and result.err or "unknown_error"), WORKER_URL_FALLBACK))
 
-        local fallback_result = attempt(WORKER_URL_FALLBACK)
+        local fallback_result = attempt(WORKER_URL_FALLBACK, timeout_ms)
         if fallback_result and fallback_result.ok then
             active_worker_url = WORKER_URL_FALLBACK
             print(string.format("[EventScan] Резервный Worker (%s) сработал. Переключаюсь на него до конца сессии.", WORKER_URL_FALLBACK))
@@ -1122,6 +1350,558 @@ local function center_text(text, color)
         imgui.Text(text)
     end
 end
+
+-- ==================== Планировщик событий /espl (аналог plan.html) ====================
+-- Та же логика, что и на сайте: даты -5..+3 от сегодня, слоты по 20 минут,
+-- бронирование/просмотр/удаление через тот же воркер (/plan, /plan/delete),
+-- автор определяется сервером по HWID (см. /check-hwid и /plan).
+
+local espl_open          = imgui_new.bool(false)
+local espl_dates         = nil
+local espl_selected_date = nil
+local espl_schedule      = {}      -- ["HH:MM"] = { author = ..., title = ... }
+local espl_loading       = false
+local espl_load_error    = ""
+
+local espl_modal_open        = false
+local espl_modal_mode        = nil   -- "create" | "own" | "foreign"
+local espl_modal_time         = nil
+local espl_modal_title_buf   = imgui_new.char[128](0)
+local espl_modal_view_author = ""
+local espl_modal_view_title  = ""
+local espl_modal_busy        = false
+local espl_modal_error       = ""
+
+-- Собственный "author" узнаём у сервера так же, как это делает plan.html
+-- (через /check-hwid) — сравнивать напрямую с игровым ником нельзя, т.к.
+-- author привязан к HWID в whitelist и может отличаться от текущего ника.
+local espl_local_author     = nil
+local espl_author_resolved  = false
+local espl_author_resolving = false
+
+local function resolve_espl_author(callback)
+    if espl_author_resolved then
+        if callback then callback(espl_local_author) end
+        return
+    end
+    if espl_author_resolving then
+        if callback then callback(nil) end
+        return
+    end
+
+    local hwid = get_hwid()
+    if not hwid then
+        if callback then callback(nil) end
+        return
+    end
+
+    espl_author_resolving = true
+    lua_thread.create(function()
+        local result = try_worker_urls(check_hwid_worker, function(url)
+            return { hwid }
+        end, 15000)
+
+        if result and result.ok and result.author then
+            espl_local_author = result.author
+        end
+        espl_author_resolved  = true
+        espl_author_resolving = false
+
+        if callback then callback(espl_local_author) end
+    end)
+end
+
+local function espl_load_schedule(date_str, callback)
+    lua_thread.create(function()
+        local result = try_worker_urls(plan_fetch_worker, function(url)
+            return { date_str }
+        end, 15000)
+        callback(result)
+    end)
+end
+
+local function espl_apply_schedule_result(result)
+    espl_loading = false
+    if result and result.ok then
+        local sched = {}
+        for _, s in ipairs(result.slots or {}) do
+            sched[s.time] = { author = s.author, title = s.title }
+        end
+        espl_schedule   = sched
+        espl_load_error = ""
+    else
+        espl_load_error = u8("Не удалось загрузить расписание: ") .. tostring(result and result.err or "timeout")
+    end
+end
+
+local function espl_select_date(ds)
+    if ds == espl_selected_date then return end
+    espl_selected_date = ds
+    espl_schedule       = {}
+    espl_loading        = true
+    espl_load_error      = ""
+    espl_load_schedule(ds, espl_apply_schedule_result)
+end
+
+-- ==================== Цвета авторов + вспомогательное для отрисовки ====================
+-- Каждому автору присваивается стабильный (детерминированный) цвет на основе
+-- хеша его имени — без localStorage, как в plan.html, но с тем же эффектом:
+-- у одного и того же автора всегда один и тот же цвет.
+
+local ESPL_AMBER = "d4a24e"
+local ESPL_ELLIPSIS = u8("…")
+
+local function espl_string_hash(str)
+    local hash = 5381
+    for i = 1, #str do
+        hash = (hash * 33 + str:byte(i)) % 2147483647
+    end
+    return hash
+end
+
+local function espl_hsl_to_rgb(h, s, l)
+    h = (h % 360) / 360
+    local function hue2rgb(p, q, t)
+        if t < 0 then t = t + 1 end
+        if t > 1 then t = t - 1 end
+        if t < 1 / 6 then return p + (q - p) * 6 * t end
+        if t < 1 / 2 then return q end
+        if t < 2 / 3 then return p + (q - p) * (2 / 3 - t) * 6 end
+        return p
+    end
+    if s == 0 then return l, l, l end
+    local q = (l < 0.5) and (l * (1 + s)) or (l + s - l * s)
+    local p = 2 * l - q
+    return hue2rgb(p, q, h + 1 / 3), hue2rgb(p, q, h), hue2rgb(p, q, h - 1 / 3)
+end
+
+local espl_author_color_cache = {}
+
+-- Возвращает набор ImVec4-цветов для конкретного автора: яркая обводка,
+-- приглушённый фон, версии для наведения/приглушённого (прошедшего) состояния.
+local function espl_author_colors(author)
+    local key = (author and author ~= "") and author or "—"
+    local cached = espl_author_color_cache[key]
+    if cached then return cached end
+
+    local hue = espl_string_hash(key) % 360
+    local r, g, b = espl_hsl_to_rgb(hue, 0.65, 0.52)
+
+    local colors = {
+        border      = imgui.ImVec4(r, g, b, 1.0),
+        border_dim  = imgui.ImVec4(r, g, b, 0.5),
+        bg          = imgui.ImVec4(r * 0.30, g * 0.30, b * 0.30, 1.0),
+        bg_hover    = imgui.ImVec4(r * 0.45, g * 0.45, b * 0.45, 1.0),
+        bg_dim      = imgui.ImVec4(r * 0.20, g * 0.20, b * 0.20, 0.7),
+        accent      = imgui.ImVec4(math.min(r * 1.35, 1), math.min(g * 1.35, 1), math.min(b * 1.35, 1), 1.0),
+    }
+    espl_author_color_cache[key] = colors
+    return colors
+end
+
+-- Обрезка строки по ширине с многоточием, безопасная для многобайтового UTF-8
+-- (не режет символ Cyrillic пополам).
+local function espl_truncate_to_width(text, max_width)
+    if text == "" or imgui.CalcTextSize(text).x <= max_width then
+        return text
+    end
+
+    local ellipsis_w = imgui.CalcTextSize(ESPL_ELLIPSIS).x
+    local result = ""
+    local i = 1
+    while i <= #text do
+        local b = text:byte(i)
+        local clen = 1
+        if b >= 0xF0 then clen = 4
+        elseif b >= 0xE0 then clen = 3
+        elseif b >= 0xC0 then clen = 2
+        end
+
+        local candidate = result .. text:sub(i, i + clen - 1)
+        if imgui.CalcTextSize(candidate).x + ellipsis_w > max_width then
+            break
+        end
+        result = candidate
+        i = i + clen
+    end
+
+    if result == "" then return ESPL_ELLIPSIS end
+    return result .. ESPL_ELLIPSIS
+end
+
+imgui.OnFrame(function() return espl_open[0] end, function()
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 8))
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(16, 16))
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.055, 0.075, 0.055, 0.98))
+    imgui.PushStyleColor(imgui.Col.Border, hexcol(GREEN_MID))
+    imgui.PushStyleColor(imgui.Col.TitleBg, hexcol(GREEN_DARK))
+    imgui.PushStyleColor(imgui.Col.TitleBgActive, hexcol(GREEN_DARK))
+    imgui.PushStyleColor(imgui.Col.Button, hexcol(GREEN_DARK))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, hexcol(GREEN_MID))
+    imgui.PushStyleColor(imgui.Col.ButtonActive, hexcol(GREEN_BRIGHT))
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
+
+    local imgui_io = imgui.GetIO()
+    imgui.SetNextWindowPos(
+        imgui.ImVec2(imgui_io.DisplaySize.x / 2, imgui_io.DisplaySize.y / 2),
+        imgui.Cond.Appearing, imgui.ImVec2(0.5, 0.5)
+    )
+
+    imgui.Begin('##espl_window', espl_open,
+        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.AlwaysAutoResize)
+
+    if espl_dates then
+        local today_ds = format_date_ymd(os.time())
+        for i, t in ipairs(espl_dates) do
+            local ds        = format_date_ymd(t)
+            local tbl       = os.date("*t", t)
+            local is_today  = ds == today_ds
+            local is_active = ds == espl_selected_date
+            local dow_text  = is_today and "Сегодня" or DOW_LABELS_RU[tbl.wday]
+            local date_text = string.format("%02d.%02d", tbl.day, tbl.month)
+
+            local tab_bg, tab_border, tab_text
+            if is_active and is_today then
+                tab_bg     = hexcol(ESPL_AMBER, 0.35)
+                tab_border = hexcol(ESPL_AMBER, 1.0)
+                tab_text   = imgui.ImVec4(1, 1, 1, 1)
+            elseif is_active then
+                tab_bg     = hexcol(GREEN_BRIGHT, 0.30)
+                tab_border = hexcol(GREEN_BRIGHT, 1.0)
+                tab_text   = imgui.ImVec4(1, 1, 1, 1)
+            elseif is_today then
+                tab_bg     = imgui.ImVec4(0.22, 0.17, 0.07, 1.0)
+                tab_border = hexcol(ESPL_AMBER, 1.0)
+                tab_text   = hexcol(ESPL_AMBER, 1.0)
+            else
+                tab_bg     = imgui.ImVec4(0.09, 0.13, 0.09, 1.0)
+                tab_border = hexcol(GREEN_MID, 0.45)
+                tab_text   = imgui.ImVec4(0.78, 0.85, 0.78, 1.0)
+            end
+
+            local tab_accent = is_today and ESPL_AMBER or GREEN_BRIGHT
+
+            imgui.PushStyleColor(imgui.Col.Button, tab_bg)
+            if espl_loading then
+                imgui.PushStyleColor(imgui.Col.ButtonHovered, tab_bg)
+                imgui.PushStyleColor(imgui.Col.ButtonActive, tab_bg)
+            else
+                imgui.PushStyleColor(imgui.Col.ButtonHovered, hexcol(tab_accent, 0.45))
+                imgui.PushStyleColor(imgui.Col.ButtonActive, hexcol(tab_accent, 0.55))
+            end
+            imgui.PushStyleColor(imgui.Col.Border, tab_border)
+            imgui.PushStyleColor(imgui.Col.Text, tab_text)
+            imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 2.0)
+
+            local btn_size = imgui.ImVec2(78, 46)
+            local btn_pos  = imgui.GetCursorScreenPos()
+
+            local clicked = imgui.Button("##espl_date_" .. ds, btn_size)
+
+            do
+                local draw_list = imgui.GetWindowDrawList()
+                local line1     = u8(dow_text)
+                local line2     = date_text
+                local line_h    = imgui.GetTextLineHeight()
+                local w1        = imgui.CalcTextSize(line1).x
+                local w2        = imgui.CalcTextSize(line2).x
+                local start_y   = btn_pos.y + (btn_size.y - line_h * 2) / 2
+                local color_u32 = imgui.ColorConvertFloat4ToU32(tab_text)
+
+                draw_list:AddText(imgui.ImVec2(btn_pos.x + (btn_size.x - w1) / 2, start_y), color_u32, line1)
+                draw_list:AddText(imgui.ImVec2(btn_pos.x + (btn_size.x - w2) / 2, start_y + line_h), color_u32, line2)
+            end
+
+            if clicked and not espl_loading then
+                espl_select_date(ds)
+            end
+
+            imgui.PopStyleVar(1)
+            imgui.PopStyleColor(5)
+
+            if i % 9 ~= 0 then imgui.SameLine() end
+        end
+    end
+
+    imgui.Spacing()
+    imgui.Separator()
+    imgui.Spacing()
+
+    do
+        local status_text  = ""
+        local status_color = hexcol(GREEN_BRIGHT)
+        if espl_load_error ~= "" then
+            status_text  = espl_load_error
+            status_color = imgui.ImVec4(1, 0.35, 0.35, 1)
+        elseif espl_loading then
+            status_text  = u8("Загрузка расписания...")
+        end
+
+        if status_text ~= "" then
+            center_text(status_text, status_color)
+        else
+            imgui.Dummy(imgui.ImVec2(0, imgui.GetTextLineHeight()))
+        end
+    end
+
+    imgui.Spacing()
+
+    local grid_locked = espl_loading or (espl_load_error ~= "")
+
+    local slots     = espl_generate_time_slots()
+    local cols      = 8
+    local slot_w    = 84
+    local slot_h    = 44
+    local label_max_w = slot_w - 10
+
+    local grid_w    = cols * slot_w + (cols - 1) * 8
+    local avail_w   = imgui.GetContentRegionAvail().x
+    local offset_x  = math.max((avail_w - grid_w) / 2, 0)
+    local row_start_x = imgui.GetCursorPosX()
+
+    for i, time in ipairs(slots) do
+        if (i - 1) % cols == 0 then
+            imgui.SetCursorPosX(row_start_x + offset_x)
+        end
+
+        local booking   = (not grid_locked) and espl_schedule[time] or nil
+        local is_booked = booking ~= nil
+        local is_past   = (not grid_locked) and espl_is_past(espl_selected_date, time) or false
+        local disabled  = grid_locked or (is_past and not is_booked)
+
+        local btn_bg, btn_bg_hover, btn_border, btn_text, border_size
+
+        if is_booked then
+            local c = espl_author_colors(booking.author)
+            btn_bg       = is_past and c.bg_dim or c.bg
+            btn_bg_hover = is_past and c.bg_dim or c.bg_hover
+            btn_border   = is_past and c.border_dim or c.border
+            btn_text     = is_past and imgui.ImVec4(0.85, 0.85, 0.85, 0.75) or imgui.ImVec4(1, 1, 1, 1)
+            border_size  = 2.0
+        elseif disabled then
+            btn_bg       = imgui.ImVec4(0.08, 0.08, 0.08, 0.6)
+            btn_bg_hover = btn_bg
+            btn_border   = imgui.ImVec4(0.22, 0.22, 0.22, 0.5)
+            btn_text     = imgui.ImVec4(0.45, 0.45, 0.45, 0.7)
+            border_size  = 1.0
+        else
+            btn_bg       = imgui.ImVec4(0.10, 0.17, 0.10, 1.0)
+            btn_bg_hover = imgui.ImVec4(0.16, 0.28, 0.16, 1.0)
+            btn_border   = hexcol(GREEN_MID, 0.55)
+            btn_text     = imgui.ImVec4(0.82, 0.92, 0.82, 1.0)
+            border_size  = 1.0
+        end
+
+        imgui.PushStyleColor(imgui.Col.Button, btn_bg)
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, btn_bg_hover)
+        imgui.PushStyleColor(imgui.Col.ButtonActive, btn_bg_hover)
+        imgui.PushStyleColor(imgui.Col.Border, btn_border)
+        imgui.PushStyleColor(imgui.Col.Text, btn_text)
+        imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, border_size)
+
+        local label = time
+        if is_booked then
+            label = label .. "\n" .. espl_truncate_to_width(booking.author or "", label_max_w)
+        end
+
+        local clicked = imgui.Button(label .. "##espl_slot_" .. time, imgui.ImVec2(slot_w, slot_h))
+
+        imgui.PopStyleVar(1)
+        imgui.PopStyleColor(5)
+
+        if clicked and not disabled then
+            espl_modal_time  = time
+            espl_modal_error = ""
+
+            if is_booked then
+                local is_own = (espl_local_author ~= nil) and (booking.author == espl_local_author) and not is_past
+                if is_own then
+                    espl_modal_mode = "own"
+                    espl_modal_title_buf[0] = 0
+                    local title_bytes = booking.title or ""
+                    ffi.copy(espl_modal_title_buf, title_bytes, math.min(#title_bytes, ffi.sizeof(espl_modal_title_buf) - 1))
+                else
+                    espl_modal_mode = "foreign"
+                    espl_modal_view_author = booking.author or ""
+                    espl_modal_view_title  = booking.title or ""
+                end
+            else
+                espl_modal_mode = "create"
+                espl_modal_title_buf[0] = 0
+            end
+
+            espl_modal_open = true
+        end
+
+        if i % cols ~= 0 then imgui.SameLine() end
+    end
+
+    imgui.End()
+
+    imgui.PopStyleColor(8)
+    imgui.PopStyleVar(4)
+end)
+
+imgui.OnFrame(function() return espl_modal_open end, function()
+    local modal_booking = espl_schedule[espl_modal_time]
+    local modal_author_colors = nil
+    if espl_modal_mode == "foreign" then
+        modal_author_colors = espl_author_colors(espl_modal_view_author)
+    elseif modal_booking then
+        modal_author_colors = espl_author_colors(modal_booking.author)
+    end
+    local modal_border = modal_author_colors and modal_author_colors.border or hexcol(GREEN_MID)
+
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 2.0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(18, 16))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.05, 0.08, 0.05, 0.98))
+    imgui.PushStyleColor(imgui.Col.Border, modal_border)
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
+    imgui.PushStyleColor(imgui.Col.Button, hexcol(GREEN_DARK))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, hexcol(GREEN_MID))
+
+    local imgui_io = imgui.GetIO()
+    imgui.SetNextWindowPos(
+        imgui.ImVec2(imgui_io.DisplaySize.x / 2, imgui_io.DisplaySize.y / 2),
+        imgui.Cond.Always, imgui.ImVec2(0.5, 0.5)
+    )
+
+    imgui.Begin('##espl_modal_window', nil,
+        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoSavedSettings +
+        imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.AlwaysAutoResize)
+
+    local MODAL_CONTENT_W = 300
+
+    center_text(u8(tostring(espl_selected_date) .. " · " .. tostring(espl_modal_time)), hexcol(GREEN_BRIGHT))
+    imgui.Spacing()
+
+    if espl_modal_mode == "foreign" then
+        imgui.Text(u8("Автор:"))
+        imgui.SameLine()
+        do
+            local draw_list   = imgui.GetWindowDrawList()
+            local swatch_pos  = imgui.GetCursorScreenPos()
+            local swatch_size = 12
+            draw_list:AddRectFilled(
+                swatch_pos,
+                imgui.ImVec2(swatch_pos.x + swatch_size, swatch_pos.y + swatch_size),
+                imgui.ColorConvertFloat4ToU32(modal_author_colors.accent), 3
+            )
+            imgui.Dummy(imgui.ImVec2(swatch_size + 4, swatch_size))
+        end
+        imgui.SameLine(0, 4)
+        imgui.TextColored(modal_author_colors.accent, espl_modal_view_author)
+
+        imgui.Spacing()
+        imgui.Text(u8("Название:"))
+        imgui.PushTextWrapPos(imgui.GetCursorPosX() + MODAL_CONTENT_W)
+        imgui.TextWrapped(espl_modal_view_title)
+        imgui.PopTextWrapPos()
+    else
+        imgui.PushItemWidth(MODAL_CONTENT_W)
+        imgui.InputText('##espl_title_input', espl_modal_title_buf, ffi.sizeof(espl_modal_title_buf))
+        imgui.PopItemWidth()
+    end
+
+    if espl_modal_error ~= "" then
+        imgui.Spacing()
+        center_text(espl_modal_error, imgui.ImVec4(1, 0.35, 0.35, 1))
+    end
+
+    imgui.Spacing()
+
+    if espl_modal_busy then
+        center_text(u8("Отправка..."), hexcol(GREEN_BRIGHT))
+    elseif espl_modal_mode == "foreign" then
+        if imgui.Button(u8("Закрыть"), imgui.ImVec2(MODAL_CONTENT_W, 32)) then
+            espl_modal_open = false
+        end
+    else
+        local avail      = MODAL_CONTENT_W
+        local gap        = 8
+        local has_delete = espl_modal_mode == "own"
+        local btn_count  = has_delete and 3 or 2
+        local btn_w      = (avail - gap * (btn_count - 1)) / btn_count
+
+        if imgui.Button(u8("Сохранить"), imgui.ImVec2(btn_w, 32)) then
+            local title = ffi.string(espl_modal_title_buf)
+            title = title:gsub('^%s+', ''):gsub('%s+$', '')
+
+            if title == "" then
+                espl_modal_error = u8("Введите название мероприятия")
+            else
+                local hwid = get_hwid()
+                if not hwid then
+                    espl_modal_error = u8("HWID ещё не определён")
+                else
+                    espl_modal_busy = true
+                    local time = espl_modal_time
+                    local date = espl_selected_date
+
+                    lua_thread.create(function()
+                        local result = try_worker_urls(plan_save_worker, function(url)
+                            return { hwid, date, time, title }
+                        end, 15000)
+                        espl_modal_busy = false
+
+                        if result and result.ok then
+                            espl_schedule[time] = { author = result.author, title = result.title }
+                            espl_modal_open = false
+                        else
+                            local err = result and result.err or "timeout"
+                            espl_modal_error = u8("Ошибка сохранения: ") .. tostring(err)
+                        end
+                    end)
+                end
+            end
+        end
+
+        imgui.SameLine(0, gap)
+
+        if has_delete then
+            if imgui.Button(u8("Удалить"), imgui.ImVec2(btn_w, 32)) then
+                local hwid = get_hwid()
+                if not hwid then
+                    espl_modal_error = u8("HWID ещё не определён")
+                else
+                    espl_modal_busy = true
+                    local time = espl_modal_time
+                    local date = espl_selected_date
+
+                    lua_thread.create(function()
+                        local result = try_worker_urls(plan_delete_worker, function(url)
+                            return { hwid, date, time }
+                        end, 15000)
+                        espl_modal_busy = false
+
+                        if result and result.ok then
+                            espl_schedule[time] = nil
+                            espl_modal_open = false
+                        else
+                            local err = result and result.err or "timeout"
+                            espl_modal_error = u8("Ошибка удаления: ") .. tostring(err)
+                        end
+                    end)
+                end
+            end
+            imgui.SameLine(0, gap)
+        end
+
+        if imgui.Button(u8("Отмена"), imgui.ImVec2(btn_w, 32)) then
+            espl_modal_open = false
+        end
+    end
+
+    imgui.End()
+
+    imgui.PopStyleColor(5)
+    imgui.PopStyleVar(5)
+end)
 
 -- ==================== Всплывающее уведомление снизу экрана ====================
 -- Тост с анимацией
@@ -2055,13 +2835,15 @@ function main()
     end)
 
     resolve_hwid()
+    resolve_espl_author()
     check_for_update()
 
     es_msg("{FFFF00}/es {FFFFFF}(добавить скан), {FFFF00}")
     es_msg("{FFFF00}/ess Название Ник_Победителя {FFFFFF}(Отправить отчет)")
     es_msg("{FFFF00}/eslast {FFFFFF}(время с последнего отчёта)")
     es_msg("{FFFF00}/esr {FFFFFF}(открыть CRM-дашборд твоих отчётов)")
-    es_msg("{FFFF00}/esp {FFFFFF}(открыть планировщик событий)")
+    es_msg("{FFFF00}/esp {FFFFFF}(открыть планировщик событий в браузере)")
+    es_msg("{FFFF00}/espl {FFFFFF}(открыть планировщик прямо в игре)")
     es_msg("{FFFF00}/esreset {FFFFFF}(сбросить кеш папки скриншотов)")
     
     sampRegisterChatCommand("es", function()
@@ -2355,6 +3137,31 @@ function main()
         resolve_screens_root(function(path)
             screens_root_folder = path
         end)
+    end)
+
+    sampRegisterChatCommand("espl", function()
+        if espl_open[0] then
+            espl_open[0]    = false
+            espl_modal_open = false
+            return
+        end
+
+        local hwid = get_hwid()
+        if not hwid then
+            es_msg("HWID ещё не определён. Попробуй через пару секунд.", "FFAA00")
+            return
+        end
+
+        resolve_espl_author()
+
+        espl_dates         = espl_get_date_range()
+        espl_selected_date = format_date_ymd(os.time())
+        espl_schedule       = {}
+        espl_loading        = true
+        espl_load_error      = ""
+        espl_open[0]        = true
+
+        espl_load_schedule(espl_selected_date, espl_apply_schedule_result)
     end)
 
     wait(-1)
