@@ -242,7 +242,7 @@ local function get_readable_time()
     return os.date("!%d.%m.%Y %H:%M:%S", t)
 end
 
--- ==================== Хелперы дат/времени для планировщика (/espl) ====================
+-- ==================== Хелперы дат/времени для планировщика (/esp) ====================
 
 local DOW_LABELS_RU = { "Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб" }
 
@@ -528,7 +528,7 @@ local function d1_last_report_worker(channel, worker_url, token)
     end
 end
 
--- ==================== Воркеры планировщика (/espl, аналог plan.html) ====================
+-- ==================== Воркеры планировщика (/esp, аналог plan.html) ====================
 
 local function plan_fetch_worker(channel, worker_url, date)
     local requests = require("requests")
@@ -1351,7 +1351,7 @@ local function center_text(text, color)
     end
 end
 
--- ==================== Планировщик событий /espl (аналог plan.html) ====================
+-- ==================== Планировщик событий /esp (аналог plan.html) ====================
 -- Та же логика, что и на сайте: даты -5..+3 от сегодня, слоты по 20 минут,
 -- бронирование/просмотр/удаление через тот же воркер (/plan, /plan/delete),
 -- автор определяется сервером по HWID (см. /check-hwid и /plan).
@@ -2842,8 +2842,7 @@ function main()
     es_msg("{FFFF00}/ess Название Ник_Победителя {FFFFFF}(Отправить отчет)")
     es_msg("{FFFF00}/eslast {FFFFFF}(время с последнего отчёта)")
     es_msg("{FFFF00}/esr {FFFFFF}(открыть CRM-дашборд твоих отчётов)")
-    es_msg("{FFFF00}/esp {FFFFFF}(открыть планировщик событий в браузере)")
-    es_msg("{FFFF00}/espl {FFFFFF}(открыть планировщик прямо в игре)")
+    es_msg("{FFFF00}/esp {FFFFFF}(открыть планировщик событий в игре)")
     es_msg("{FFFF00}/esreset {FFFFFF}(сбросить кеш папки скриншотов)")
     
     sampRegisterChatCommand("es", function()
@@ -3087,59 +3086,9 @@ function main()
         end)
     end)
 
-    -- Открывает планировщик (plan.html) тем же способом, что и /esr для
-    -- author.html: одноразовый токен, гасится за 1 использование, живёт
-    -- не дольше минуты. plan.html не использует путь в hash (нет ника в
-    -- URL) — авторизация и определение автора там целиком идут по HWID
-    -- на сервере после обмена токена.
+    -- Открывает планировщик прямо в игре (то же окно, что раньше открывалось
+    -- командой /espl — теперь она объединена с /esp).
     sampRegisterChatCommand("esp", function()
-        local hwid = get_hwid()
-        if not hwid then
-            es_msg("HWID ещё не определён. Попробуй через пару секунд.", "FFAA00")
-            return
-        end
-
-        lua_thread.create(function()
-            local gen_result = try_worker_urls(gen_token_worker, function(url)
-                return { WORKER_TOKEN, hwid }
-            end, 15000)
-
-            if not gen_result or not gen_result.ok or not gen_result.token then
-                local err = gen_result and gen_result.err or "timeout"
-                if is_hwid_error(err) then
-                    notify_hwid_denied()
-                else
-                    es_msg("Не удалось сгенерировать ссылку для входа: " .. tostring(err), "FF4444")
-                end
-                return
-            end
-
-            local url = "https://saportbati.github.io/eventCRM/plan.html#/&token=" .. gen_result.token
-
-            local channel = effil.channel()
-            local thr = effil.thread(open_url_worker)(channel, url)
-            active_threads[#active_threads+1] = thr
-
-            local result = wait_for_channel(channel, 5000)
-            if result and result.ok then
-                es_msg("Открываю планировщик CRM...")
-            else
-                es_msg("Не удалось открыть браузер (" .. tostring(result and result.err or "timeout") .. ").", "FF4444")
-                es_msg("Ссылка для ручного открытия (действует не дольше 1 минуты): {FFFF00}" .. url)
-            end
-        end)
-    end)
-
-    sampRegisterChatCommand("esreset", function()
-        os.remove(SCREENS_CACHE_FILE)
-        screens_root_folder = nil
-        es_msg("Кеш папки со скриншотами сброшен. Открываю окно для повторной настройки...")
-        resolve_screens_root(function(path)
-            screens_root_folder = path
-        end)
-    end)
-
-    sampRegisterChatCommand("espl", function()
         if espl_open[0] then
             espl_open[0]    = false
             espl_modal_open = false
@@ -3162,6 +3111,15 @@ function main()
         espl_open[0]        = true
 
         espl_load_schedule(espl_selected_date, espl_apply_schedule_result)
+    end)
+
+    sampRegisterChatCommand("esreset", function()
+        os.remove(SCREENS_CACHE_FILE)
+        screens_root_folder = nil
+        es_msg("Кеш папки со скриншотами сброшен. Открываю окно для повторной настройки...")
+        resolve_screens_root(function(path)
+            screens_root_folder = path
+        end)
     end)
 
     wait(-1)
