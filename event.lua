@@ -133,7 +133,7 @@ local active_worker_url = WORKER_URL_PRIMARY
 local WORKER_TOKEN = "SET_YOUR_OWN_SECRET_HERE"
 local SCAN_RADIUS  = 200.0
 
-local SCRIPT_VERSION      = "1.2"
+local SCRIPT_VERSION      = "1.3"
 local VERSION_CHECK_URL   = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/version.txt"
 local UPDATE_DOWNLOAD_URL = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/event.lua"
 
@@ -246,18 +246,26 @@ end
 
 local DOW_LABELS_RU = { "Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб" }
 
+-- ВАЖНО: планировщик (/esp) всегда работает по МСК (UTC+3), как и сервер
+-- (воркер /plan, /check-hwid) и сайт plan.html — независимо от того, какой
+-- часовой пояс выставлен на компьютере игрока. Поэтому даты/эпохи здесь
+-- считаются вручную через os.time()+MSK_OFFSET и os.date("!..."), а не через
+-- os.date("*t")/os.time(table), которые интерпретируют значения в ЛОКАЛЬНОЙ
+-- таймзоне ПК и на не-MSK машинах сдвигали бы список дат и блокировку
+-- прошедших слотов на разницу поясов.
+local MSK_OFFSET = 10800
+
 local function format_date_ymd(t)
-    return os.date("%Y-%m-%d", t)
+    return os.date("!%Y-%m-%d", t)
 end
 
 -- 5 дней назад + сегодня + 3 дня вперёд = 9 дней, как в plan.html
 local function espl_get_date_range()
     local days = {}
-    local now_tbl = os.date("*t", os.time())
-    now_tbl.hour, now_tbl.min, now_tbl.sec = 0, 0, 0
-    local midnight = os.time(now_tbl)
+    local msk_now      = os.time() + MSK_OFFSET
+    local msk_midnight = msk_now - (msk_now % 86400)
     for offset = -5, 3 do
-        table.insert(days, midnight + offset * 86400)
+        table.insert(days, msk_midnight + offset * 86400)
     end
     return days
 end
@@ -273,13 +281,25 @@ local function espl_generate_time_slots()
     return slots
 end
 
+-- Дни от гражданской эпохи (алгоритм Hinnant, UTC-safe), чтобы не зависеть
+-- от os.time(table), который трактует поля как ЛОКАЛЬНОЕ время ПК.
+local function espl_days_from_civil(y, m, d)
+    y = y - ((m <= 2) and 1 or 0)
+    local era = math.floor((y >= 0 and y or y - 399) / 400)
+    local yoe = y - era * 400
+    local doy = math.floor((153 * (m + ((m > 2) and -3 or 9)) + 2) / 5) + d - 1
+    local doe = yoe * 365 + math.floor(yoe / 4) - math.floor(yoe / 100) + doy
+    return era * 146097 + doe - 719468
+end
+
+-- Возвращает настоящий UTC-epoch, соответствующий указанному дню/времени
+-- по МСК — не зависит от часового пояса, выставленного на компьютере игрока.
 local function espl_slot_epoch(date_str, time_str)
     local y, m, d = date_str:match("(%d+)-(%d+)-(%d+)")
     local h, mi = time_str:match("(%d+):(%d+)")
-    return os.time({
-        year = tonumber(y), month = tonumber(m), day = tonumber(d),
-        hour = tonumber(h), min = tonumber(mi), sec = 0
-    })
+    local days = espl_days_from_civil(tonumber(y), tonumber(m), tonumber(d))
+    local naive_msk_epoch = days * 86400 + tonumber(h) * 3600 + tonumber(mi) * 60
+    return naive_msk_epoch - MSK_OFFSET
 end
 
 local function espl_is_past(date_str, time_str)
@@ -1499,6 +1519,15 @@ local function espl_author_colors(author)
     return colors
 end
 
+-- В карточках слотов показываем только ник до "_" (полное "Nick_Name"
+-- используется для цвета/сравнения/фильтрации "свой/чужой", но занимает
+-- слишком много места на маленькой кнопке слота).
+local function espl_short_nick(author)
+    if not author or author == "" then return author end
+    local nick = author:match("^([^_]+)")
+    return nick or author
+end
+
 -- Обрезка строки по ширине с многоточием, безопасная для многобайтового UTF-8
 -- (не режет символ Cyrillic пополам).
 local function espl_truncate_to_width(text, max_width)
@@ -1553,10 +1582,10 @@ imgui.OnFrame(function() return espl_open[0] end, function()
         imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.AlwaysAutoResize)
 
     if espl_dates then
-        local today_ds = format_date_ymd(os.time())
+        local today_ds = format_date_ymd(os.time() + MSK_OFFSET)
         for i, t in ipairs(espl_dates) do
             local ds        = format_date_ymd(t)
-            local tbl       = os.date("*t", t)
+            local tbl       = os.date("!*t", t)
             local is_today  = ds == today_ds
             local is_active = ds == espl_selected_date
             local dow_text  = is_today and "Сегодня" or DOW_LABELS_RU[tbl.wday]
@@ -1703,7 +1732,7 @@ imgui.OnFrame(function() return espl_open[0] end, function()
 
         local label = time
         if is_booked then
-            label = label .. "\n" .. espl_truncate_to_width(booking.author or "", label_max_w)
+            label = label .. "\n" .. espl_truncate_to_width(espl_short_nick(booking.author) or "", label_max_w)
         end
 
         local clicked = imgui.Button(label .. "##espl_slot_" .. time, imgui.ImVec2(slot_w, slot_h))
@@ -1770,6 +1799,15 @@ imgui.OnFrame(function() return espl_modal_open end, function()
         imgui.ImVec2(imgui_io.DisplaySize.x / 2, imgui_io.DisplaySize.y / 2),
         imgui.Cond.Always, imgui.ImVec2(0.5, 0.5)
     )
+
+    -- Модалка обязана быть поверх основного окна планировщика всегда, а не
+    -- только в момент открытия: ImGui сортирует окна по z-order на основе
+    -- фокуса, и клик по основному окну (сквозь промежутки между слотами,
+    -- скролл и т.п.) мог перетащить фокус на него и утопить модалку под
+    -- ним. Поэтому каждый кадр, пока модалка открыта, принудительно
+    -- отдаём ей фокус до вызова Begin — тогда она гарантированно рисуется
+    -- последней (сверху) и не может провалиться под основное окно.
+    imgui.SetNextWindowFocus()
 
     imgui.Begin('##espl_modal_window', nil,
         imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoSavedSettings +
@@ -3104,7 +3142,7 @@ function main()
         resolve_espl_author()
 
         espl_dates         = espl_get_date_range()
-        espl_selected_date = format_date_ymd(os.time())
+        espl_selected_date = format_date_ymd(os.time() + MSK_OFFSET)
         espl_schedule       = {}
         espl_loading        = true
         espl_load_error      = ""
