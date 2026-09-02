@@ -96,14 +96,18 @@
     box-shadow: 0 4px 20px rgba(79, 195, 176, 0.3);
   }
 
+  /* Цвет автора (--ac-*) выставляется инлайново в JS для каждого забро-
+     нированного слота — так у разных пользователей брони визуально
+     различаются. Фолбэк на исходный teal/gold остаётся на случай, если
+     переменная почему-то не проставлена. */
   .time-slot.booked {
-    background: rgba(79, 195, 176, 0.15);
-    border-color: #4fc3b0;
-    box-shadow: 0 0 15px rgba(79, 195, 176, 0.4);
+    background: var(--ac-bg, rgba(79, 195, 176, 0.15));
+    border-color: var(--ac-solid, #4fc3b0);
+    box-shadow: 0 0 15px var(--ac-shadow, rgba(79, 195, 176, 0.4));
   }
 
   .time-slot.booked:hover {
-    background: rgba(79, 195, 176, 0.25);
+    background: var(--ac-bg-hover, rgba(79, 195, 176, 0.25));
   }
 
   /* Прошедшие слоты — визуально притушены, чтобы было интуитивно
@@ -125,7 +129,7 @@
     cursor: pointer;
   }
   .time-slot.booked.past:hover {
-    background: rgba(79, 195, 176, 0.2);
+    background: var(--ac-bg, rgba(79, 195, 176, 0.2));
     transform: none;
     box-shadow: none;
   }
@@ -139,7 +143,7 @@
   }
 
   .time-slot.booked .time-code {
-    color: #8ce9d7;
+    color: var(--ac-light, #8ce9d7);
   }
 
   .slot-label {
@@ -152,7 +156,7 @@
     margin-top: 6px;
     font-size: 11px;
     font-weight: 600;
-    color: #d4a24e;
+    color: var(--ac-solid, #d4a24e);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -342,6 +346,101 @@
   // подставляет по HWID — клиент не может задать чужое имя.
   let currentHwid = null;
   let currentAuthor = 'Аноним';
+
+  // ============== ЦВЕТА АВТОРОВ (полностью на клиенте, без воркера) ==============
+  // Каждому автору один раз назначается случайный цвет (только оттенок —
+  // насыщенность и яркость зафиксированы в "сочной" средней зоне, поэтому
+  // чёрный/белый в принципе не могут получиться). Новый оттенок подбирается
+  // так, чтобы быть подальше по кругу от уже занятых — чтобы соседние брони
+  // не сливались в почти одинаковый цвет. Результат сохраняется в
+  // localStorage, так что при следующем визите цвета не "прыгают" и заново
+  // не генерируются.
+  const AUTHOR_COLORS_KEY = 'plan_author_colors_v1';
+  const COLOR_SATURATION = 68; // %, фиксированная — подальше от серого/белого
+  const COLOR_LIGHTNESS = 56;  // %, средняя зона — подальше от чёрного/белого
+  const MIN_HUE_DISTANCE = 28; // градусов между соседними оттенками
+  const HUE_PICK_ATTEMPTS = 60;
+
+  function loadAuthorColors() {
+    try {
+      const raw = localStorage.getItem(AUTHOR_COLORS_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return (parsed && typeof parsed === 'object') ? parsed : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveAuthorColors(map) {
+    try {
+      localStorage.setItem(AUTHOR_COLORS_KEY, JSON.stringify(map));
+    } catch (e) {
+      console.error('[Colors] Failed to save author colors:', e);
+    }
+  }
+
+  let authorColorMap = loadAuthorColors();
+
+  function circularHueDistance(a, b) {
+    const d = Math.abs(a - b) % 360;
+    return d > 180 ? 360 - d : d;
+  }
+
+  function pickHueFarFromExisting(existingHues) {
+    for (let i = 0; i < HUE_PICK_ATTEMPTS; i++) {
+      const candidate = Math.floor(Math.random() * 360);
+      if (existingHues.every(h => circularHueDistance(candidate, h) >= MIN_HUE_DISTANCE)) {
+        return candidate;
+      }
+    }
+    // Не удалось за отведённое число попыток найти оттенок с достаточным
+    // отступом (например, уже занято очень много цветов) — берём тот,
+    // что максимально далёк от всех существующих, чтобы разница всё
+    // равно была наибольшей из возможных.
+    let best = Math.floor(Math.random() * 360);
+    let bestMinDist = -1;
+    for (let candidate = 0; candidate < 360; candidate += 2) {
+      const minDist = existingHues.length
+        ? Math.min(...existingHues.map(h => circularHueDistance(candidate, h)))
+        : 360;
+      if (minDist > bestMinDist) {
+        bestMinDist = minDist;
+        best = candidate;
+      }
+    }
+    return best;
+  }
+
+  function buildColorSet(hue) {
+    const lightAccent = Math.min(COLOR_LIGHTNESS + 18, 82);
+    return {
+      solid: `hsl(${hue}, ${COLOR_SATURATION}%, ${COLOR_LIGHTNESS}%)`,
+      light: `hsl(${hue}, ${COLOR_SATURATION}%, ${lightAccent}%)`,
+      bg: `hsla(${hue}, ${COLOR_SATURATION}%, ${COLOR_LIGHTNESS}%, 0.15)`,
+      bgHover: `hsla(${hue}, ${COLOR_SATURATION}%, ${COLOR_LIGHTNESS}%, 0.25)`,
+      shadow: `hsla(${hue}, ${COLOR_SATURATION}%, ${COLOR_LIGHTNESS}%, 0.4)`
+    };
+  }
+
+  function getAuthorColorSet(name) {
+    const key = (name && String(name).trim()) || '—';
+    let entry = authorColorMap[key];
+    if (!entry || typeof entry.h !== 'number') {
+      const existingHues = Object.values(authorColorMap)
+        .map(c => c && c.h)
+        .filter(h => typeof h === 'number');
+      const hue = pickHueFarFromExisting(existingHues);
+      entry = { h: hue };
+      authorColorMap[key] = entry;
+      saveAuthorColors(authorColorMap);
+    }
+    return buildColorSet(entry.h);
+  }
+
+  function authorColorStyleAttr(name) {
+    const c = getAuthorColorSet(name);
+    return ` style="--ac-solid:${c.solid}; --ac-light:${c.light}; --ac-bg:${c.bg}; --ac-bg-hover:${c.bgHover}; --ac-shadow:${c.shadow};"`;
+  }
 
   // ============== АВТОРИЗАЦИЯ ЧЕРЕЗ ОДНОРАЗОВЫЙ ТОКЕН ==============
   // /esr в игре больше не кладёт голый HWID в URL (он был бы фактически
@@ -612,8 +711,10 @@
       if (isBooked) classes.push('booked');
       if (isPast) classes.push('past');
 
+      const colorAttr = isBooked ? authorColorStyleAttr(booking.author) : '';
+
       return `
-        <div class="${classes.join(' ')}" data-time="${time}" ${isBooked ? `title="${escapeHtml(booking.author)}: ${escapeHtml(booking.title)}"` : ''}>
+        <div class="${classes.join(' ')}" data-time="${time}"${colorAttr} ${isBooked ? `title="${escapeHtml(booking.author)}: ${escapeHtml(booking.title)}"` : ''}>
           <div class="time-code">${time}</div>
           ${isBooked ? `<div class="slot-label">Занято</div>` : `<div class="slot-label">${isPast ? 'Недоступно' : 'Доступно'}</div>`}
           ${isBooked ? `
