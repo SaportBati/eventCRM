@@ -10,11 +10,17 @@
 <style>
   .plan-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    grid-template-columns: repeat(8, 1fr);
     gap: 12px;
     padding: 24px;
     max-width: 1400px;
     margin: 0 auto;
+  }
+  @media (max-width: 900px){
+    .plan-grid{ grid-template-columns: repeat(4, 1fr); }
+  }
+  @media (max-width: 560px){
+    .plan-grid{ grid-template-columns: repeat(2, 1fr); }
   }
 
   .time-slot {
@@ -67,11 +73,14 @@
   .slot-info {
     display: none;
     position: absolute;
+    top: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
     background: #1b202a;
     border: 1px solid #4fc3b0;
     border-radius: 8px;
     padding: 12px;
-    min-width: 200px;
+    width: 200px;
     z-index: 1000;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     pointer-events: none;
@@ -430,7 +439,7 @@
       return `
         <div class="time-slot ${isBooked ? 'booked' : ''}" data-time="${time}">
           <div class="time-code">${time}</div>
-          ${isBooked ? `<div class="slot-label">Забронировано</div>` : `<div class="slot-label">Доступно</div>`}
+          ${isBooked ? `<div class="slot-label">Занято</div>` : `<div class="slot-label">Доступно</div>`}
           ${isBooked ? `
             <div class="slot-info">
               <div class="slot-info-author">👤 ${escapeHtml(booking.author)}</div>
