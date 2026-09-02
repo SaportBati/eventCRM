@@ -267,8 +267,6 @@
 <script>
 (async function(){
   const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
-  const REFRESH_INTERVAL_MS = 20000; // фоновое обновление, чтобы видеть чужие брони без перезагрузки
-
   const $ = (id) => document.getElementById(id);
 
   // Заполняются после успешной авторизации: HWID нужен на каждый запрос
@@ -579,16 +577,6 @@
       closeModal();
     }
   });
-
-  // ============== ФОНОВОЕ ОБНОВЛЕНИЕ ==============
-  // Подхватываем брони других пользователей без перезагрузки страницы.
-  // Пропускаем обновление, пока открыто модальное окно, чтобы не сбить
-  // ввод текущего пользователя.
-  setInterval(async () => {
-    if ($('inputModal').classList.contains('show')) return;
-    await loadSchedule();
-    renderSlots();
-  }, REFRESH_INTERVAL_MS);
 
   // ============== ИНИЦИАЛИЗАЦИЯ ==============
   async function init() {
