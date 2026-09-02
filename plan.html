@@ -15,12 +15,64 @@
     padding: 24px;
     max-width: 1400px;
     margin: 0 auto;
+    transition: opacity 0.2s ease;
   }
   @media (max-width: 900px){
     .plan-grid{ grid-template-columns: repeat(4, 1fr); }
   }
   @media (max-width: 560px){
     .plan-grid{ grid-template-columns: repeat(2, 1fr); }
+  }
+
+  /* ---------- date tabs ---------- */
+  .date-tabs {
+    display: flex;
+    gap: 8px;
+    padding: 0 24px 22px;
+    max-width: 1400px;
+    margin: 0 auto;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+  .date-tab {
+    flex: 0 0 auto;
+    min-width: 72px;
+    background: rgba(26, 31, 46, 0.6);
+    border: 2px solid rgba(79, 195, 176, 0.2);
+    border-radius: 10px;
+    padding: 10px 14px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    user-select: none;
+  }
+  .date-tab:hover {
+    border-color: #4fc3b0;
+    background: rgba(79, 195, 176, 0.1);
+  }
+  .date-tab.active {
+    border-color: #4fc3b0;
+    background: rgba(79, 195, 176, 0.22);
+    box-shadow: 0 0 15px rgba(79, 195, 176, 0.35);
+  }
+  .date-tab .dow {
+    font-size: 10.5px;
+    color: #929aab;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+  }
+  .date-tab.active .dow { color: #8ce9d7; }
+  .date-tab.today .dow { color: #d4a24e; }
+  .date-tab.active.today .dow { color: #8ce9d7; }
+  .date-tab .dnum {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+    font-weight: 600;
+    color: #ece7da;
+    margin-top: 3px;
   }
 
   .time-slot {
@@ -50,6 +102,30 @@
 
   .time-slot.booked:hover {
     background: rgba(79, 195, 176, 0.25);
+  }
+
+  /* Прошедшие слоты — визуально притушены, чтобы было интуитивно
+     понятно, что они недоступны для действий. Свободные прошедшие
+     слоты полностью некликабельны (обработчик клика не вешается);
+     занятые прошедшие можно только посмотреть, но не редактировать. */
+  .time-slot.past {
+    opacity: 0.38;
+    cursor: default;
+  }
+  .time-slot.past:hover {
+    transform: none;
+    box-shadow: none;
+    border-color: rgba(79, 195, 176, 0.2);
+    background: rgba(26, 31, 46, 0.6);
+  }
+  .time-slot.booked.past {
+    opacity: 0.55;
+    cursor: pointer;
+  }
+  .time-slot.booked.past:hover {
+    background: rgba(79, 195, 176, 0.2);
+    transform: none;
+    box-shadow: none;
   }
 
   .time-code {
@@ -235,8 +311,10 @@
   <div id="app" style="display: none;">
     <div class="plan-header">
       <h2 class="plan-title">Планировщик событий</h2>
-      <p class="plan-subtitle">Выберите время и забронируйте слот для вашего мероприятия</p>
+      <p class="plan-subtitle">Выберите дату и время и забронируйте слот для вашего мероприятия</p>
     </div>
+
+    <div class="date-tabs" id="dateTabs"></div>
 
     <div class="plan-grid" id="planGrid"></div>
   </div>
@@ -381,6 +459,71 @@
     return;
   }
 
+  // ============== ДАТЫ (5 дней назад + сегодня + 3 дня вперёд = 9) ==============
+  function fmtDateStr(d) {
+    const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  const DOW_LABELS = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+
+  function getDateRange() {
+    const days = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    for (let offset = -5; offset <= 3; offset++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() + offset);
+      days.push(d);
+    }
+    return days;
+  }
+
+  // Выбранная дата по умолчанию — сегодня.
+  let selectedDate = fmtDateStr(new Date());
+
+  function renderDateTabs() {
+    const wrap = $('dateTabs');
+    const days = getDateRange();
+    const todayStr = fmtDateStr(new Date());
+
+    wrap.innerHTML = days.map(d => {
+      const ds = fmtDateStr(d);
+      const isToday = ds === todayStr;
+      const isActive = ds === selectedDate;
+      const dow = DOW_LABELS[d.getDay()];
+      const label = `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}`;
+      return `<div class="date-tab ${isActive ? 'active' : ''} ${isToday ? 'today' : ''}" data-date="${ds}">
+        <div class="dow">${isToday ? 'Сегодня' : dow}</div>
+        <div class="dnum">${label}</div>
+      </div>`;
+    }).join('');
+
+    wrap.querySelectorAll('.date-tab').forEach(tab => {
+      tab.addEventListener('click', () => selectDate(tab.dataset.date));
+    });
+  }
+
+  async function selectDate(ds) {
+    if (ds === selectedDate) return;
+    selectedDate = ds;
+    renderDateTabs();
+    const grid = $('planGrid');
+    grid.style.opacity = '0.35';
+    await loadSchedule();
+    renderSlots();
+    grid.style.opacity = '1';
+  }
+
+  // Слот считается прошедшим, если его дата+время уже позади текущего
+  // момента. Используется и для блокировки клика, и для затемнения.
+  function isSlotPast(dateStr, timeStr) {
+    const [h, m] = timeStr.split(':').map(Number);
+    const slotDate = new Date(dateStr + 'T00:00:00');
+    slotDate.setHours(h, m, 0, 0);
+    return slotDate.getTime() < Date.now();
+  }
+
   // ============== ГЕНЕРАЦИЯ ВРЕМЕННЫХ СЛОТОВ ==============
   function generateTimeSlots() {
     const slots = [];
@@ -395,11 +538,11 @@
   }
 
   // ============== РАБОТА С ДАННЫМИ (общие через воркер/D1) ==============
-  let schedule = {}; // { "14:20": { author: "Имя", title: "Название" } }
+  let schedule = {}; // { "14:20": { author: "Имя", title: "Название" } } — для выбранной даты
 
   async function loadSchedule() {
     try {
-      const resp = await fetch(WORKER_URL + '/plan');
+      const resp = await fetch(WORKER_URL + '/plan?date=' + encodeURIComponent(selectedDate));
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const data = await resp.json();
       if (!data.ok) throw new Error(data.error || 'unknown_error');
@@ -422,11 +565,16 @@
     grid.innerHTML = slots.map(time => {
       const booking = schedule[time];
       const isBooked = Boolean(booking);
+      const isPast = isSlotPast(selectedDate, time);
+
+      const classes = ['time-slot'];
+      if (isBooked) classes.push('booked');
+      if (isPast) classes.push('past');
 
       return `
-        <div class="time-slot ${isBooked ? 'booked' : ''}" data-time="${time}" ${isBooked ? `title="${escapeHtml(booking.author)}: ${escapeHtml(booking.title)}"` : ''}>
+        <div class="${classes.join(' ')}" data-time="${time}" ${isBooked ? `title="${escapeHtml(booking.author)}: ${escapeHtml(booking.title)}"` : ''}>
           <div class="time-code">${time}</div>
-          ${isBooked ? `<div class="slot-label">Занято</div>` : `<div class="slot-label">Доступно</div>`}
+          ${isBooked ? `<div class="slot-label">Занято</div>` : `<div class="slot-label">${isPast ? 'Недоступно' : 'Доступно'}</div>`}
           ${isBooked ? `
             <div class="slot-owner">👤 ${escapeHtml(booking.author)}</div>
             <div class="slot-owner-title">${escapeHtml(booking.title)}</div>
@@ -435,8 +583,14 @@
       `;
     }).join('');
 
-    // Добавляем обработчики событий
+    // Добавляем обработчики событий. Прошедшие свободные слоты —
+    // полностью некликабельны (визуально притушены и не реагируют).
+    // Прошедшие занятые слоты кликабельны только для просмотра.
     grid.querySelectorAll('.time-slot').forEach(slot => {
+      const time = slot.dataset.time;
+      const isBooked = Boolean(schedule[time]);
+      const isPast = isSlotPast(selectedDate, time);
+      if (isPast && !isBooked) return;
       slot.addEventListener('click', (e) => handleSlotClick(e, slot));
     });
   }
@@ -458,12 +612,15 @@
     modal.style.left = Math.min(rect.left, window.innerWidth - 360) + 'px';
     modal.style.top = Math.min(rect.top, window.innerHeight - 200) + 'px';
 
-    const isOwn = Boolean(booking) && booking.author === currentAuthor;
+    const isPast = isSlotPast(selectedDate, currentTime);
+    // Прошедшую бронь нельзя редактировать/удалять, даже свою — она
+    // всегда открывается в режиме просмотра.
+    const isOwn = Boolean(booking) && booking.author === currentAuthor && !isPast;
     const isForeign = Boolean(booking) && !isOwn;
 
-    // Чужую бронь можно только посмотреть: поле ввода и кнопка
-    // "Сохранить" скрыты, редактировать/перезаписать нельзя (сервер
-    // это тоже проверяет и отклонит попытку).
+    // Чужую (или прошедшую) бронь можно только посмотреть: поле ввода
+    // и кнопка "Сохранить" скрыты, редактировать/перезаписать нельзя
+    // (сервер это тоже проверяет и отклонит попытку).
     $('modalViewInfo').style.display = isForeign ? 'block' : 'none';
     $('eventTitle').style.display = isForeign ? 'none' : 'block';
     $('btnSave').style.display = isForeign ? 'none' : 'inline-block';
@@ -471,7 +628,7 @@
     $('btnCancel').textContent = isForeign ? 'Закрыть' : 'Отмена';
 
     if (isForeign) {
-      $('modalHeader').textContent = `Время: ${currentTime}`;
+      $('modalHeader').textContent = `${selectedDate} · ${currentTime}${isPast ? ' · прошло' : ''}`;
       $('modalViewInfo').innerHTML = `
         <div><strong style="color:#d4a24e;">👤 ${escapeHtml(booking.author)}</strong></div>
         <div style="margin-top:6px;">📋 ${escapeHtml(booking.title)}</div>
@@ -514,7 +671,7 @@
           'Content-Type': 'application/json',
           'X-HWID': currentHwid
         },
-        body: JSON.stringify({ time: currentTime, title })
+        body: JSON.stringify({ date: selectedDate, time: currentTime, title })
       });
       const data = await resp.json();
       if (!data.ok) {
@@ -543,7 +700,7 @@
           'Content-Type': 'application/json',
           'X-HWID': currentHwid
         },
-        body: JSON.stringify({ time: currentTime })
+        body: JSON.stringify({ date: selectedDate, time: currentTime })
       });
       const data = await resp.json();
       if (!data.ok) {
@@ -584,6 +741,7 @@
     $('loadingState').style.display = 'block';
     $('app').style.display = 'none';
 
+    renderDateTabs();
     await loadSchedule();
 
     $('loadingState').style.display = 'none';
