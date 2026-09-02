@@ -599,9 +599,23 @@
     return;
   }
 
+  // ============== ВРЕМЯ: ВСЕГДА МСК, НЕЗАВИСИМО ОТ ЧАСОВОГО ПОЯСА УСТРОЙСТВА ==============
+  // МСК — это UTC+3 круглый год (в России нет перехода на летнее время),
+  // поэтому смещение фиксированное. Мы не полагаемся на локальные getters
+  // (getFullYear/getHours/...), так как они возвращают время часового
+  // пояса ПК пользователя. Вместо этого берём "сырые" миллисекунды epoch
+  // (они не зависят от часового пояса), прибавляем 3 часа и дальше везде
+  // читаем через getUTC*-методы — это даёт стабильную "московскую" дату
+  // и время на любом устройстве.
+  const MSK_OFFSET_MS = 3 * 60 * 60 * 1000;
+
+  function getMskNow() {
+    return new Date(Date.now() + MSK_OFFSET_MS);
+  }
+
   // ============== ДАТЫ (5 дней назад + сегодня + 3 дня вперёд = 9) ==============
   function fmtDateStr(d) {
-    const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
+    const y = d.getUTCFullYear(), m = String(d.getUTCMonth() + 1).padStart(2, '0'), day = String(d.getUTCDate()).padStart(2, '0');
     return `${y}-${m}-${day}`;
   }
 
@@ -609,30 +623,30 @@
 
   function getDateRange() {
     const days = [];
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const today = getMskNow();
+    today.setUTCHours(0, 0, 0, 0);
     for (let offset = -5; offset <= 3; offset++) {
       const d = new Date(today);
-      d.setDate(d.getDate() + offset);
+      d.setUTCDate(d.getUTCDate() + offset);
       days.push(d);
     }
     return days;
   }
 
-  // Выбранная дата по умолчанию — сегодня.
-  let selectedDate = fmtDateStr(new Date());
+  // Выбранная дата по умолчанию — сегодня по МСК.
+  let selectedDate = fmtDateStr(getMskNow());
 
   function renderDateTabs() {
     const wrap = $('dateTabs');
     const days = getDateRange();
-    const todayStr = fmtDateStr(new Date());
+    const todayStr = fmtDateStr(getMskNow());
 
     wrap.innerHTML = days.map(d => {
       const ds = fmtDateStr(d);
       const isToday = ds === todayStr;
       const isActive = ds === selectedDate;
-      const dow = DOW_LABELS[d.getDay()];
-      const label = `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const dow = DOW_LABELS[d.getUTCDay()];
+      const label = `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
       return `<div class="date-tab ${isActive ? 'active' : ''} ${isToday ? 'today' : ''}" data-date="${ds}">
         <div class="dow">${isToday ? 'Сегодня' : dow}</div>
         <div class="dnum">${label}</div>
@@ -655,13 +669,17 @@
     grid.style.opacity = '1';
   }
 
-  // Слот считается прошедшим, если его дата+время уже позади текущего
-  // момента. Используется и для блокировки клика, и для затемнения.
+  // Слот считается прошедшим, если его дата+время (трактуемые как МСК)
+  // уже позади текущего момента по МСК. Используется и для блокировки
+  // клика, и для затемнения. Дату/время слота парсим как UTC-строку —
+  // это просто способ получить "сырые" числа без вмешательства локального
+  // часового пояса браузера; сравниваем их с getMskNow(), который живёт
+  // в той же условной шкале ("epoch + 3ч"), поэтому сравнение корректно.
   function isSlotPast(dateStr, timeStr) {
     const [h, m] = timeStr.split(':').map(Number);
-    const slotDate = new Date(dateStr + 'T00:00:00');
-    slotDate.setHours(h, m, 0, 0);
-    return slotDate.getTime() < Date.now();
+    const slotDate = new Date(dateStr + 'T00:00:00Z');
+    slotDate.setUTCHours(h, m, 0, 0);
+    return slotDate.getTime() < getMskNow().getTime();
   }
 
   // ============== ГЕНЕРАЦИЯ ВРЕМЕННЫХ СЛОТОВ ==============
