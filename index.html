@@ -103,6 +103,12 @@
         </table>
       </div>
       <div class="empty-state" id="emptyState" style="display:none;">Отчётов не найдено — измени фильтры или дождись новых сканов.</div>
+
+      <div class="pagination js-reveal" id="pagination" style="display:none; align-items:center; justify-content:center; gap:14px; margin-top:18px;">
+        <button type="button" id="pagePrev" class="page-btn" aria-label="Назад">←</button>
+        <span class="page-info" id="pageInfo" style="font-family:'JetBrains Mono', monospace; color:#c8cdd8; font-size:13px;"></span>
+        <button type="button" id="pageNext" class="page-btn" aria-label="Вперёд">→</button>
+      </div>
     </section>
 
   </div>
@@ -115,11 +121,25 @@
   </div>
 </div>
 
+<style>
+  .page-btn{
+    width:36px; height:36px; border-radius:10px;
+    border:1px solid #2a3140; background:rgba(255,255,255,0.03);
+    color:#c8cdd8; font-size:16px; cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    transition: background .2s ease, border-color .2s ease, opacity .2s ease, transform .15s ease;
+  }
+  .page-btn:hover:not(:disabled){ background:rgba(79,195,176,0.12); border-color:#4fc3b0; color:#8ce9d7; }
+  .page-btn:active:not(:disabled){ transform: scale(.94); }
+  .page-btn:disabled{ opacity:.35; cursor:default; }
+</style>
 <script>
 (async function(){
   const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
   let allReports = [];
   let charts = {};
+  const PAGE_SIZE = 10;
+  let currentPage = 1;
   const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const hasGsap = typeof gsap !== 'undefined';
 
@@ -667,8 +687,27 @@
     });
   }
 
-  function renderReportsTable(list, tbodyEl, emptyEl){
-    emptyEl.style.display = list.length ? 'none' : 'block';
+  function renderReportsTable(fullList, tbodyEl, emptyEl){
+    emptyEl.style.display = fullList.length ? 'none' : 'block';
+
+    const totalPages = Math.max(1, Math.ceil(fullList.length / PAGE_SIZE));
+    if(currentPage > totalPages) currentPage = totalPages;
+    if(currentPage < 1) currentPage = 1;
+    const startIdx = (currentPage - 1) * PAGE_SIZE;
+    const list = fullList.slice(startIdx, startIdx + PAGE_SIZE);
+
+    const paginationEl = $('pagination');
+    if(paginationEl){
+      if(fullList.length > PAGE_SIZE){
+        paginationEl.style.display = 'flex';
+        $('pageInfo').textContent = `Стр. ${currentPage} / ${totalPages} · ${fullList.length} отчётов`;
+        $('pagePrev').disabled = currentPage <= 1;
+        $('pageNext').disabled = currentPage >= totalPages;
+      } else {
+        paginationEl.style.display = 'none';
+      }
+    }
+
     tbodyEl.innerHTML = list.map((r, i) => {
       const when = (r.date || '') + (r.time ? ' ' + r.time : '');
       return `
@@ -728,9 +767,11 @@
     revealStagger('.js-reveal', { stagger: .07 });
   }
 
-  $('searchInput').addEventListener('input', () => renderReportsTable(getFiltered(), $('tableBody'), $('emptyState')));
-  $('authorFilter').addEventListener('change', () => renderReportsTable(getFiltered(), $('tableBody'), $('emptyState')));
-  $('sortSelect').addEventListener('change', () => renderReportsTable(getFiltered(), $('tableBody'), $('emptyState')));
+  $('searchInput').addEventListener('input', () => { currentPage = 1; renderReportsTable(getFiltered(), $('tableBody'), $('emptyState')); });
+  $('authorFilter').addEventListener('change', () => { currentPage = 1; renderReportsTable(getFiltered(), $('tableBody'), $('emptyState')); });
+  $('sortSelect').addEventListener('change', () => { currentPage = 1; renderReportsTable(getFiltered(), $('tableBody'), $('emptyState')); });
+  $('pagePrev').addEventListener('click', () => { currentPage -= 1; renderReportsTable(getFiltered(), $('tableBody'), $('emptyState')); });
+  $('pageNext').addEventListener('click', () => { currentPage += 1; renderReportsTable(getFiltered(), $('tableBody'), $('emptyState')); });
 
   // ---------------- init ----------------
   connectAndLoad();
