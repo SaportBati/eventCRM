@@ -134,17 +134,6 @@
     box-shadow: none;
   }
 
-  /* Прошедшие слоты, доступные админу для управления — курсор/hover
-     показывают, что кликнуть по ним всё же можно, в отличие от обычных
-     притушенных прошедших слотов выше. */
-  .time-slot.past.admin-can-manage {
-    cursor: pointer !important;
-  }
-  .time-slot.past.admin-can-manage:hover {
-    border-color: #d4a24e !important;
-    box-shadow: 0 0 15px rgba(212, 162, 78, 0.4) !important;
-  }
-
   .time-code {
     font-family: 'JetBrains Mono', monospace;
     font-size: 18px;
@@ -357,12 +346,7 @@
   // подставляет по HWID — клиент не может задать чужое имя.
   let currentHwid = null;
   let currentAuthor = 'Аноним';
-  // Админ может отменять/переоформлять брони других игроков, включая уже
-  // прошедшее время. Флаг приходит с сервера (колонка is_admin в
-  // hwid_whitelist) — клиент ему просто следует, но реальная проверка
-  // всё равно на сервере (worker.js), так что подделать это на клиенте
-  // бессмысленно.
-  let currentIsAdmin = false;
+  let isAdmin = false;
 
   // ============== ЦВЕТА АВТОРОВ (полностью на клиенте, без воркера) ==============
   // Каждому автору один раз назначается случайный цвет (только оттенок —
@@ -541,7 +525,7 @@
       localStorage.setItem('authorized_hwid', hwid);
       currentHwid = hwid;
       currentAuthor = result.author || 'Аноним';
-      currentIsAdmin = result.isAdmin;
+      isAdmin = result.isAdmin || false;
       localStorage.setItem('user_name', currentAuthor);
       return true;
     }
@@ -558,7 +542,7 @@
       }
       currentHwid = savedHwid;
       currentAuthor = result.author || 'Аноним';
-      currentIsAdmin = result.isAdmin;
+      isAdmin = result.isAdmin || false;
       localStorage.setItem('user_name', currentAuthor);
       return true;
     }
@@ -747,18 +731,16 @@
 
       const classes = ['time-slot'];
       if (isBooked) classes.push('booked');
-      if (isPast) classes.push('past');
-      // Для админа прошедшие слоты остаются визуально притушенными, но
-      // становятся кликабельными — добавляем отдельный класс, чтобы
-      // курсор/hover это отражали (см. .admin-can-manage в <style>).
-      if (isPast && currentIsAdmin) classes.push('admin-can-manage');
+      // Для админа прошедшие слоты не помечаются как 'past', чтобы они
+      // оставались визуально активными и редактируемыми
+      if (isPast && !isAdmin) classes.push('past');
 
       const colorAttr = isBooked ? authorColorStyleAttr(booking.author) : '';
 
       return `
         <div class="${classes.join(' ')}" data-time="${time}"${colorAttr} ${isBooked ? `title="${escapeHtml(booking.author)}: ${escapeHtml(booking.title)}"` : ''}>
           <div class="time-code">${time}</div>
-          ${isBooked ? `<div class="slot-label">Занято</div>` : `<div class="slot-label">${isPast ? (currentIsAdmin ? 'Доступно (админ)' : 'Недоступно') : 'Доступно'}</div>`}
+          ${isBooked ? `<div class="slot-label">Занято</div>` : `<div class="slot-label">${isPast && !isAdmin ? 'Недоступно' : 'Доступно'}</div>`}
           ${isBooked ? `
             <div class="slot-owner">👤 ${escapeHtml(booking.author)}</div>
             <div class="slot-owner-title">${escapeHtml(booking.title)}</div>
@@ -767,14 +749,14 @@
       `;
     }).join('');
 
-    // Добавляем обработчики событий. Прошедшие свободные слоты —
-    // полностью некликабельны (визуально притушены и не реагируют).
-    // Прошедшие занятые слоты кликабельны только для просмотра.
+    // Добавляем обработчики событий. Для обычного пользователя прошедшие
+    // свободные слоты полностью некликабельны, а прошедшие занятые — только
+    // для просмотра. Для админа доступны ВСЕ слоты, включая прошедшие.
     grid.querySelectorAll('.time-slot').forEach(slot => {
       const time = slot.dataset.time;
       const isBooked = Boolean(schedule[time]);
       const isPast = isSlotPast(selectedDate, time);
-      if (isPast && !isBooked && !currentIsAdmin) return;
+      if (!isAdmin && isPast && !isBooked) return;
       slot.addEventListener('click', (e) => handleSlotClick(e, slot));
     });
   }
@@ -797,16 +779,14 @@
     modal.style.top = Math.min(rect.top, window.innerHeight - 200) + 'px';
 
     const isPast = isSlotPast(selectedDate, currentTime);
-    // Прошедшую или чужую бронь обычный игрок редактировать/удалять не
-    // может — она открывается в режиме просмотра. Админ — исключение:
-    // ему доступно управление любым слотом (своим, чужим, прошедшим),
-    // сервер это тоже разрешает по флагу is_admin из hwid_whitelist.
-    const isOwn = Boolean(booking) && (currentIsAdmin || (booking.author === currentAuthor && !isPast));
+    // Прошедшую бронь нельзя редактировать/удалять, если ты не админ.
+    // Админ может редактировать/удалять любые брони, даже прошедшие.
+    const isOwn = Boolean(booking) && (isAdmin || (booking.author === currentAuthor && !isPast));
     const isForeign = Boolean(booking) && !isOwn;
 
-    // Чужую (или прошедшую, для не-админа) бронь можно только посмотреть:
-    // поле ввода и кнопка "Сохранить" скрыты, редактировать/перезаписать
-    // нельзя (сервер это тоже проверяет и отклонит попытку).
+    // Чужую (или прошедшую) бронь можно только посмотреть: поле ввода
+    // и кнопка "Сохранить" скрыты, редактировать/перезаписать нельзя
+    // (сервер это тоже проверяет и отклонит попытку).
     $('modalViewInfo').style.display = isForeign ? 'block' : 'none';
     $('eventTitle').style.display = isForeign ? 'none' : 'block';
     $('btnSave').style.display = isForeign ? 'none' : 'inline-block';
@@ -820,14 +800,10 @@
         <div style="margin-top:6px;">📋 ${escapeHtml(booking.title)}</div>
       `;
     } else if (isOwn) {
-      // Для админа, редактирующего чужую бронь, показываем исходного
-      // автора в заголовке — чтобы было видно, чью запись он трогает.
-      const adminNote = (currentIsAdmin && booking && booking.author !== currentAuthor)
-        ? ` · было: ${booking.author}` : '';
-      $('modalHeader').textContent = `Время: ${currentTime}${isPast ? ' · прошло' : ''}${adminNote}`;
+      $('modalHeader').textContent = `Время: ${currentTime}`;
       $('eventTitle').value = booking.title;
     } else {
-      $('modalHeader').textContent = `Забронировать: ${currentTime}${isPast ? ' · прошло (админ)' : ''}`;
+      $('modalHeader').textContent = `Забронировать: ${currentTime}`;
       $('eventTitle').value = '';
     }
 
