@@ -215,6 +215,30 @@
     box-shadow: 0 0 0 3px rgba(79, 195, 176, 0.1);
   }
 
+  .input-modal select {
+    width: 100%;
+    background: rgba(26, 31, 46, 0.8);
+    border: 1px solid rgba(79, 195, 176, 0.3);
+    border-radius: 8px;
+    padding: 12px;
+    color: #ece7da;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    margin-bottom: 16px;
+    cursor: pointer;
+  }
+
+  .input-modal select:focus {
+    outline: none;
+    border-color: #4fc3b0;
+    box-shadow: 0 0 0 3px rgba(79, 195, 176, 0.1);
+  }
+
+  .input-modal select option {
+    background: #1a1f2e;
+    color: #ece7da;
+  }
+
   .input-modal-buttons {
     display: flex;
     gap: 12px;
@@ -328,6 +352,9 @@
 <div class="input-modal" id="inputModal">
   <div class="input-modal-header" id="modalHeader">Забронировать время</div>
   <div id="modalViewInfo" style="display:none; margin-bottom:16px; font-size:14px; color:#c8cdd8; line-height:1.7;"></div>
+  <select id="eventAuthor" style="display:none; width:100%; background:rgba(26,31,46,0.8); border:1px solid rgba(79,195,176,0.3); border-radius:8px; padding:12px; color:#ece7da; font-family:'Inter',sans-serif; font-size:14px; margin-bottom:16px;">
+    <option value="">Выберите автора</option>
+  </select>
   <input type="text" id="eventTitle" placeholder="Название мероприятия" maxlength="100">
   <div class="input-modal-buttons">
     <button class="btn-delete" id="btnDelete" style="display: none;">Удалить</button>
@@ -347,6 +374,7 @@
   let currentHwid = null;
   let currentAuthor = 'Аноним';
   let isAdmin = false;
+  let allUsers = []; // Список всех пользователей для админа
 
   // ============== ЦВЕТА АВТОРОВ (полностью на клиенте, без воркера) ==============
   // Каждому автору один раз назначается случайный цвет (только оттенок —
@@ -527,6 +555,12 @@
       currentAuthor = result.author || 'Аноним';
       isAdmin = result.isAdmin || false;
       localStorage.setItem('user_name', currentAuthor);
+      
+      // Загружаем список пользователей если это админ
+      if (isAdmin) {
+        await loadUsers();
+      }
+      
       return true;
     }
 
@@ -544,6 +578,12 @@
       currentAuthor = result.author || 'Аноним';
       isAdmin = result.isAdmin || false;
       localStorage.setItem('user_name', currentAuthor);
+      
+      // Загружаем список пользователей если это админ
+      if (isAdmin) {
+        await loadUsers();
+      }
+      
       return true;
     }
 
@@ -596,6 +636,22 @@
         </div>
       </div>
     `;
+  }
+
+  // Загрузка списка всех пользователей (только для админа)
+  async function loadUsers() {
+    try {
+      const resp = await fetch(WORKER_URL + '/users', {
+        headers: { 'X-HWID': currentHwid }
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.ok && Array.isArray(data.users)) {
+        allUsers = data.users;
+      }
+    } catch (e) {
+      console.error('Failed to load users:', e);
+    }
   }
 
   if (!(await isAuthorized())) {
@@ -776,22 +832,33 @@
 
     // Позиционируем модальное окно рядом с ячейкой
     modal.style.left = Math.min(rect.left, window.innerWidth - 360) + 'px';
-    modal.style.top = Math.min(rect.top, window.innerHeight - 200) + 'px';
+    modal.style.top = Math.min(rect.top, window.innerHeight - 260) + 'px';
 
     const isPast = isSlotPast(selectedDate, currentTime);
-    // Прошедшую бронь нельзя редактировать/удалять, если ты не админ.
-    // Админ может редактировать/удалять любые брони, даже прошедшие.
+    // Для админа любая бронь редактируема (в том числе чужая и прошедшая)
     const isOwn = Boolean(booking) && (isAdmin || (booking.author === currentAuthor && !isPast));
     const isForeign = Boolean(booking) && !isOwn;
 
-    // Чужую (или прошедшую) бронь можно только посмотреть: поле ввода
-    // и кнопка "Сохранить" скрыты, редактировать/перезаписать нельзя
-    // (сервер это тоже проверяет и отклонит попытку).
+    // Чужую (или прошедшую для обычного юзера) бронь можно только посмотреть
     $('modalViewInfo').style.display = isForeign ? 'block' : 'none';
     $('eventTitle').style.display = isForeign ? 'none' : 'block';
+    $('eventAuthor').style.display = (isAdmin && !isForeign) ? 'block' : 'none';
     $('btnSave').style.display = isForeign ? 'none' : 'inline-block';
     $('btnDelete').style.display = isOwn ? 'inline-block' : 'none';
     $('btnCancel').textContent = isForeign ? 'Закрыть' : 'Отмена';
+
+    // Заполняем список пользователей для админа
+    if (isAdmin && !isForeign) {
+      const select = $('eventAuthor');
+      select.innerHTML = '<option value="">Выберите автора</option>' + 
+        allUsers.map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join('');
+      
+      if (booking) {
+        select.value = booking.author;
+      } else {
+        select.value = '';
+      }
+    }
 
     if (isForeign) {
       $('modalHeader').textContent = `${selectedDate} · ${currentTime}${isPast ? ' · прошло' : ''}`;
@@ -799,8 +866,8 @@
         <div><strong style="color:#d4a24e;">👤 ${escapeHtml(booking.author)}</strong></div>
         <div style="margin-top:6px;">📋 ${escapeHtml(booking.title)}</div>
       `;
-    } else if (isOwn) {
-      $('modalHeader').textContent = `Время: ${currentTime}`;
+    } else if (isOwn && booking) {
+      $('modalHeader').textContent = `Редактировать: ${currentTime}`;
       $('eventTitle').value = booking.title;
     } else {
       $('modalHeader').textContent = `Забронировать: ${currentTime}`;
@@ -808,7 +875,13 @@
     }
 
     modal.classList.add('show');
-    if (!isForeign) $('eventTitle').focus();
+    if (!isForeign) {
+      if (isAdmin) {
+        $('eventAuthor').focus();
+      } else {
+        $('eventTitle').focus();
+      }
+    }
   }
 
   function closeModal() {
@@ -829,15 +902,36 @@
       return;
     }
 
+    // Для админа: проверяем выбран ли автор
+    let selectedAuthor = null;
+    if (isAdmin) {
+      selectedAuthor = $('eventAuthor').value.trim();
+      if (!selectedAuthor) {
+        alert('Выберите автора мероприятия');
+        return;
+      }
+    }
+
     setModalBusy(true);
     try {
+      const body = { 
+        date: selectedDate, 
+        time: currentTime, 
+        title 
+      };
+      
+      // Админ может указать автора явно
+      if (isAdmin && selectedAuthor) {
+        body.author = selectedAuthor;
+      }
+
       const resp = await fetch(WORKER_URL + '/plan', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-HWID': currentHwid
         },
-        body: JSON.stringify({ date: selectedDate, time: currentTime, title })
+        body: JSON.stringify(body)
       });
       const data = await resp.json();
       if (!data.ok) {
