@@ -1,4 +1,3 @@
--- 2
 local vkeys    = require("vkeys")
 local lfs      = require("lfs")
 local effil    = require("effil")
@@ -19,10 +18,6 @@ end
 
 local SCRIPT_DIR = thisScript().path:match("^(.*[\\/])") or ""
 
--- ==================== Кастомный шрифт для всех окон ====================
--- Шрифт качается один раз с GitHub и кешируется рядом со скриптом; если по
--- какой-то причине скачать/загрузить его не удалось, всё молча откатывается
--- на дефолтный/системные шрифты — окна не ломаются.
 local CUSTOM_FONT_URL   = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/eventscrin.ttf"
 local CUSTOM_FONT_FILE  = SCRIPT_DIR .. "eventscrin.ttf"
 local CUSTOM_FONT_SIZE  = 16.0
@@ -31,13 +26,12 @@ local custom_font       = nil
 local function is_custom_font_cached()
     local f = io.open(CUSTOM_FONT_FILE, "rb")
     if not f then return false end
+    local size = f:seek("end") or 0
     f:close()
-    return true
+
+    return size >= 1024
 end
 
--- Однократная (блокирующая) загрузка при первом запуске — файла ещё нет,
--- а грузить настоящий шрифт окна должны уже к моменту imgui.OnInitialize.
--- В дальнейших запусках файл уже лежит на диске и сеть не трогаем вообще.
 local function ensure_custom_font_downloaded()
     if is_custom_font_cached() then return true end
 
@@ -45,9 +39,10 @@ local function ensure_custom_font_downloaded()
     if not ok_req or not requests then return false end
 
     local ok_get, resp = pcall(requests.get, CUSTOM_FONT_URL, {
-        headers = { ["User-Agent"] = "SAMP-EventScan/1.4" }
+        headers = { ["User-Agent"] = "SAMP-EventScan/1.4" },
+        timeout = 10
     })
-    if not ok_get or not resp or resp.status_code ~= 200 or not resp.text or #resp.text == 0 then
+    if not ok_get or not resp or resp.status_code ~= 200 or not resp.text or #resp.text < 1024 then
         return false
     end
 
@@ -60,9 +55,6 @@ end
 
 ensure_custom_font_downloaded()
 
--- ==================== Отдельный крупный шрифт для тоста ====================
--- SetWindowFontScale просто растягивает уже отрисованный битмап шрифта (мыло),
--- поэтому для чёткого крупного текста строим настоящий шрифт нужного размера.
 local TOAST_FONT_SIZE = 27.0
 local toast_font = nil
 
@@ -80,7 +72,6 @@ imgui.OnInitialize(function()
     local ok_ranges, cyr = pcall(function() return imgui_io.Fonts:GetGlyphRangesCyrillic() end)
     if ok_ranges then ranges = cyr end
 
-    -- Кастомный шрифт (eventscrin.ttf) как шрифт по умолчанию для всех окон
     if is_custom_font_cached() then
         local ok_cf, font = pcall(function()
             return imgui_io.Fonts:AddFontFromFileTTF(CUSTOM_FONT_FILE, CUSTOM_FONT_SIZE, nil, ranges)
@@ -91,8 +82,6 @@ imgui.OnInitialize(function()
         end
     end
 
-    -- Крупный шрифт для тоста: тот же кастомный шрифт, увеличенный,
-    -- либо системный как запасной вариант, если кастомный не загрузился
     if is_custom_font_cached() then
         local ok_tf, font = pcall(function()
             return imgui_io.Fonts:AddFontFromFileTTF(CUSTOM_FONT_FILE, TOAST_FONT_SIZE, nil, ranges)
@@ -133,7 +122,7 @@ local active_worker_url = WORKER_URL_PRIMARY
 local WORKER_TOKEN = "SET_YOUR_OWN_SECRET_HERE"
 local SCAN_RADIUS  = 200.0
 
-local SCRIPT_VERSION      = "1.3"
+local SCRIPT_VERSION      = "1.4"
 local VERSION_CHECK_URL   = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/version.txt"
 local UPDATE_DOWNLOAD_URL = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/event.lua"
 
@@ -149,7 +138,210 @@ local unique_players       = {}
 local unique_players_order = {}
 local scanning_active      = false
 
-local active_threads = {}
+DC = {
+    linked        = false,
+    checking      = false,
+    polling       = false,
+    raw_register  = sampRegisterChatCommand,
+    lthreads      = {},
+    ethreads      = {},
+    inflight      = 0,
+    MAX_INFLIGHT  = 3,
+    esp_epoch     = 0,
+
+    esp_thread    = nil,
+}
+
+function DC.spawn(fn, ...)
+    local list = DC.lthreads
+    if #list >= 32 then
+        for i = #list, 1, -1 do
+            local ok, dead = pcall(function() return list[i].dead end)
+            if ok and dead == true then table.remove(list, i) end
+        end
+    end
+    local thr = lua_thread.create(fn, ...)
+    list[#list + 1] = thr
+    return thr
+end
+
+function DC.reap()
+    local list = DC.ethreads
+    for i = #list, 1, -1 do
+        local ok, status, err = pcall(function() return list[i]:status() end)
+        if not ok then
+            table.remove(list, i)
+        elseif status == "completed" or status == "cancelled" or status == "failed" then
+            if status == "failed" then
+                print("[EventScan] effil-пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ: " .. tostring(err))
+            end
+            table.remove(list, i)
+        end
+    end
+end
+
+function DC.effil_start(fn, ...)
+    DC.reap()
+    local thr = effil.thread(fn)(...)
+    DC.ethreads[#DC.ethreads + 1] = thr
+    return thr
+end
+
+function DC.cancel_all()
+    for _, thr in ipairs(DC.ethreads) do
+        pcall(function() thr:cancel(0) end)
+    end
+end
+
+function DC.avatar_worker(channel, url, path)
+    local ok_r, requests = pcall(require, "requests")
+    if not ok_r or not requests then
+        channel:push({ ok = false, err = "no_requests" })
+        return
+    end
+    local ok, resp = pcall(requests.get, url, {
+        headers = { ["User-Agent"] = "SAMP-EventScan/1.4" },
+        timeout = 25
+    })
+    if not ok then
+
+        channel:push({ ok = false, err = "network_fail: " .. tostring(resp) })
+        return
+    end
+    if not resp then
+        channel:push({ ok = false, err = "network_fail: empty_response" })
+        return
+    end
+    if resp.status_code ~= 200 or not resp.text or #resp.text < 100 then
+        channel:push({ ok = false, err = "http_" .. tostring(resp.status_code) })
+        return
+    end
+    local body = resp.text
+    local is_png  = body:sub(1, 4) == "\137PNG"
+    local is_jpeg = body:sub(1, 2) == "\255\216"
+    if not (is_png or is_jpeg) then
+        channel:push({ ok = false, err = "not_png_or_jpeg" })
+        return
+    end
+    local tmp = path .. ".tmp"
+    local f = io.open(tmp, "wb")
+    if not f then
+        channel:push({ ok = false, err = "write_fail" })
+        return
+    end
+    f:write(body)
+    f:close()
+    os.remove(path)
+    if not os.rename(tmp, path) then
+        channel:push({ ok = false, err = "rename_fail" })
+        return
+    end
+    channel:push({ ok = true })
+end
+
+function DC.esp_wait_worker(channel, worker_url, hwid, date, version)
+    local ok_r, requests = pcall(require, "requests")
+    if not ok_r or not requests then
+        channel:push({ ok = false, err = "no_requests" })
+        return
+    end
+    local ok_j, json = pcall(require, "dkjson")
+    if not ok_j or not json then
+        channel:push({ ok = false, err = "no_json" })
+        return
+    end
+
+    local function url_encode(s)
+        return (tostring(s):gsub("[^%w%-%._~]", function(c)
+            return string.format("%%%02X", c:byte())
+        end))
+    end
+
+    local qs = "date=" .. date .. "&version=" .. url_encode(version or "")
+    local ok, resp = pcall(requests.get, worker_url .. "/esp/wait?" .. qs, {
+        headers = {
+            ["X-HWID"]     = hwid,
+            ["User-Agent"] = "SAMP-EventScan/1.4"
+        },
+        timeout = 28
+    })
+
+    if not ok then
+        channel:push({ ok = false, err = "network_fail: " .. tostring(resp) })
+        return
+    end
+    if not resp then
+        channel:push({ ok = false, err = "network_fail: empty_response" })
+        return
+    end
+    if resp.status_code ~= 200 then
+        channel:push({ ok = false, err = "http_" .. tostring(resp.status_code) })
+        return
+    end
+
+    local pok, data = pcall(json.decode, resp.text)
+    if not pok or not data then
+        channel:push({ ok = false, err = "json_parse_fail" })
+        return
+    end
+
+    channel:push(data)
+end
+
+function DC.token_status_worker(channel, worker_url, token)
+    local ok_r, requests = pcall(require, "requests")
+    if not ok_r or not requests then
+        channel:push({ ok = false, err = "no_requests" })
+        return
+    end
+    local ok_j, json = pcall(require, "dkjson")
+    if not ok_j or not json then
+        channel:push({ ok = false, err = "no_json" })
+        return
+    end
+
+    local ok, resp = pcall(requests.get, worker_url .. "/token-status?token=" .. token, {
+        headers = { ["User-Agent"] = "SAMP-EventScan/1.4" },
+        timeout = 10
+    })
+
+    if not ok then
+        channel:push({ ok = false, err = "network_fail: " .. tostring(resp) })
+        return
+    end
+    if not resp then
+        channel:push({ ok = false, err = "network_fail: empty_response" })
+        return
+    end
+    if resp.status_code ~= 200 then
+        channel:push({ ok = false, err = "http_" .. tostring(resp.status_code) })
+        return
+    end
+
+    local pok, data = pcall(json.decode, resp.text)
+    if not pok or not data or not data.ok then
+        channel:push({ ok = false, err = "json_parse_fail" })
+        return
+    end
+
+    channel:push({ ok = true, used = data.used, expired = data.expired })
+end
+
+function DC.is_image_file(path)
+    local f = io.open(path, "rb")
+    if not f then return false end
+    local head = f:read(4) or ""
+    local size = f:seek("end") or 0
+    f:close()
+    if size < 100 then return false end
+    return head:sub(1, 4) == "\137PNG" or head:sub(1, 2) == "\255\216"
+end
+
+function DC.dir_iter(path)
+    local ok, it, obj = pcall(lfs.dir, path)
+    if ok and it then return it, obj end
+    return function() return nil end
+end
 
 local LOCAL_DB_FILE  = SCRIPT_DIR .. "event_scan_reports.json"
 local SCREENS_CACHE_FILE = SCRIPT_DIR .. "screens_path_cache.txt"
@@ -225,7 +417,7 @@ end
 local function start_detection_loop()
     if scanning_active then return end
     scanning_active = true
-    lua_thread.create(function()
+    DC.spawn(function()
         while scanning_active do
             scan_nearby_players_once()
             wait(DETECTION_POLL_INTERVAL)
@@ -242,24 +434,14 @@ local function get_readable_time()
     return os.date("!%d.%m.%Y %H:%M:%S", t)
 end
 
--- ==================== Хелперы дат/времени для планировщика (/esp) ====================
+local DOW_LABELS_RU = { "пїЅпїЅ", "пїЅпїЅ", "пїЅпїЅ", "пїЅпїЅ", "пїЅпїЅ", "пїЅпїЅ", "пїЅпїЅ" }
 
-local DOW_LABELS_RU = { "Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб" }
-
--- ВАЖНО: планировщик (/esp) всегда работает по МСК (UTC+3), как и сервер
--- (воркер /plan, /check-hwid) и сайт plan.html — независимо от того, какой
--- часовой пояс выставлен на компьютере игрока. Поэтому даты/эпохи здесь
--- считаются вручную через os.time()+MSK_OFFSET и os.date("!..."), а не через
--- os.date("*t")/os.time(table), которые интерпретируют значения в ЛОКАЛЬНОЙ
--- таймзоне ПК и на не-MSK машинах сдвигали бы список дат и блокировку
--- прошедших слотов на разницу поясов.
 local MSK_OFFSET = 10800
 
 local function format_date_ymd(t)
     return os.date("!%Y-%m-%d", t)
 end
 
--- 5 дней назад + сегодня + 3 дня вперёд = 9 дней, как в plan.html
 local function espl_get_date_range()
     local days = {}
     local msk_now      = os.time() + MSK_OFFSET
@@ -270,7 +452,6 @@ local function espl_get_date_range()
     return days
 end
 
--- Слоты по 20 минут, 24 часа = 72 слота на день, как в plan.html
 local function espl_generate_time_slots()
     local slots = {}
     for hour = 0, 23 do
@@ -281,8 +462,6 @@ local function espl_generate_time_slots()
     return slots
 end
 
--- Дни от гражданской эпохи (алгоритм Hinnant, UTC-safe), чтобы не зависеть
--- от os.time(table), который трактует поля как ЛОКАЛЬНОЕ время ПК.
 local function espl_days_from_civil(y, m, d)
     y = y - ((m <= 2) and 1 or 0)
     local era = math.floor((y >= 0 and y or y - 399) / 400)
@@ -292,8 +471,6 @@ local function espl_days_from_civil(y, m, d)
     return era * 146097 + doe - 719468
 end
 
--- Возвращает настоящий UTC-epoch, соответствующий указанному дню/времени
--- по МСК — не зависит от часового пояса, выставленного на компьютере игрока.
 local function espl_slot_epoch(date_str, time_str)
     local y, m, d = date_str:match("(%d+)-(%d+)-(%d+)")
     local h, mi = time_str:match("(%d+):(%d+)")
@@ -339,19 +516,25 @@ local function copy_to_clipboard(text)
 
     local ok = pcall(function()
         local ffi = require("ffi")
-        ffi.cdef[[
-            typedef int BOOL;
-            typedef void* HANDLE;
-            typedef void* HWND;
-            typedef unsigned int UINT;
-            BOOL OpenClipboard(HWND hWndNewOwner);
-            BOOL CloseClipboard(void);
-            BOOL EmptyClipboard(void);
-            HANDLE SetClipboardData(UINT uFormat, HANDLE hMem);
-            HANDLE GlobalAlloc(UINT uFlags, size_t dwBytes);
-            void* GlobalLock(HANDLE hMem);
-            BOOL GlobalUnlock(HANDLE hMem);
-        ]]
+        if not DC.clip_cdef then
+            DC.clip_cdef = true
+
+            for _, decl in ipairs({
+                "typedef int BOOL;",
+                "typedef void* HANDLE;",
+                "typedef void* HWND;",
+                "typedef unsigned int UINT;",
+                "BOOL OpenClipboard(HWND hWndNewOwner);",
+                "BOOL CloseClipboard(void);",
+                "BOOL EmptyClipboard(void);",
+                "HANDLE SetClipboardData(UINT uFormat, HANDLE hMem);",
+                "HANDLE GlobalAlloc(UINT uFlags, size_t dwBytes);",
+                "void* GlobalLock(HANDLE hMem);",
+                "BOOL GlobalUnlock(HANDLE hMem);",
+            }) do
+                pcall(ffi.cdef, decl)
+            end
+        end
 
         local user32   = ffi.load("user32")
         local kernel32 = ffi.load("kernel32")
@@ -390,8 +573,8 @@ end
 
 local function notify_hwid_denied()
     copy_to_clipboard(get_hwid() or "UNKNOWN")
-    es_msg("Твой HWID не добавлен в систему!", "FF4444")
-    es_msg("Он скопирован в буфер обмена — отправь его разработчику, чтобы тебя добавили.", "FF4444")
+    es_msg("пїЅпїЅпїЅпїЅ HWID пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ!", "FF4444")
+    es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ, пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ.", "FF4444")
 end
 
 local function screenshot_upload_worker(channel, worker_url, token, binary_data, hwid)
@@ -413,7 +596,15 @@ local function screenshot_upload_worker(channel, worker_url, token, binary_data,
         return table.concat(result)
     end
 
-    local payload = json.encode({ data = encodeBase64(binary_data) })
+    local b64
+    local ok_m, mime = pcall(require, "mime")
+    if ok_m and type(mime) == "table" and mime.b64 then
+        local ok_b, res = pcall(mime.b64, binary_data)
+        if ok_b and type(res) == "string" and #res > 0 then b64 = res end
+    end
+    if not b64 then b64 = encodeBase64(binary_data) end
+
+    local payload = json.encode({ data = b64 })
 
     local ok, response = pcall(requests.request, "POST", worker_url .. "/upload-image", {
         headers = {
@@ -484,9 +675,11 @@ local function d1_report_worker(channel, worker_url, token, payload_json, hwid)
     channel:push({ ok = false, err = err_detail })
 end
 
-local function gen_token_worker(channel, worker_url, token, hwid)
+local function gen_token_worker(channel, worker_url, token, hwid, purpose)
     local requests = require("requests")
     local json     = require("dkjson")
+
+    local payload = json.encode({ purpose = purpose or "esr" })
 
     local ok, resp = pcall(requests.request, "POST", worker_url .. "/gen-token", {
         headers = {
@@ -495,7 +688,7 @@ local function gen_token_worker(channel, worker_url, token, hwid)
             ["X-HWID"]       = hwid,
             ["User-Agent"]   = "SAMP-EventScan/1.4"
         },
-        data = "{}"
+        data = payload
     })
 
     if not ok or not resp then
@@ -547,8 +740,6 @@ local function d1_last_report_worker(channel, worker_url, token)
         channel:push({ ok = false, err = "http_" .. tostring(resp.status_code) })
     end
 end
-
--- ==================== Воркеры планировщика (/esp, аналог plan.html) ====================
 
 local function plan_fetch_worker(channel, worker_url, date)
     local requests = require("requests")
@@ -652,7 +843,43 @@ local function check_hwid_worker(channel, worker_url, hwid)
     if resp.status_code == 200 then
         local pok, data = pcall(json.decode, resp.text)
         if pok and data and data.ok then
-            channel:push({ ok = true, allowed = data.allowed, author = data.author })
+            channel:push({ ok = true, allowed = data.allowed, author = data.author,
+                          discord_avatar = data.discord_avatar, discord_linked = data.discord_linked })
+        else
+            channel:push({ ok = false, err = "json_parse_fail" })
+        end
+    else
+        channel:push({ ok = false, err = "http_" .. tostring(resp.status_code) })
+    end
+end
+
+local function my_stats_worker(channel, worker_url, hwid)
+    local requests = require("requests")
+    local json     = require("dkjson")
+
+    local ok, resp = pcall(requests.get, worker_url .. "/my-stats", {
+        headers = {
+            ["X-HWID"]     = hwid,
+            ["User-Agent"] = "SAMP-EventScan/1.4"
+        }
+    })
+
+    if not ok or not resp then
+        channel:push({ ok = false, err = "network_fail" })
+        return
+    end
+
+    if resp.status_code == 200 then
+        local pok, data = pcall(json.decode, resp.text)
+        if pok and data and data.ok then
+            channel:push({
+                ok            = true,
+                author        = data.author,
+                reports_today = data.reports_today,
+                reports_week  = data.reports_week,
+                reports_all   = data.reports_all,
+                balance       = data.balance
+            })
         else
             channel:push({ ok = false, err = "json_parse_fail" })
         end
@@ -846,7 +1073,7 @@ local function browse_folder_worker(channel, title_utf8)
     end
 end
 
-local function wait_for_channel(channel, timeout_ms)
+local function wait_for_channel(channel, timeout_ms, thr)
     local waited = 0
     local POLL = 30
     while waited < timeout_ms do
@@ -854,21 +1081,64 @@ local function wait_for_channel(channel, timeout_ms)
         if data ~= nil then
             return data
         end
+
+        if thr then
+            local ok, status, err = pcall(function() return thr:status() end)
+            if ok and (status == "failed" or status == "completed" or status == "cancelled") then
+                local last = channel:pop(0)
+                if last ~= nil then return last end
+                if status == "failed" then
+                    return { ok = false, err = "worker_failed: " .. tostring(err) }
+                end
+                return { ok = false, err = "worker_no_result" }
+            end
+        end
+
         wait(POLL)
         waited = waited + POLL
     end
     return nil
 end
 
-local PRIMARY_WORKER_TIMEOUT_MS = 2000
+local PRIMARY_WORKER_TIMEOUT_MS = 6000
+
+local function is_network_failure(result)
+    if result == nil then return true end
+    if result.ok then return false end
+    local err = tostring(result.err or "")
+    return err == "" or err == "network_fail" or err:find("^worker_") ~= nil
+        or err:find("^thread_start_fail") ~= nil or err:find("^http_5") ~= nil
+        or err == "json_parse_fail"
+end
 
 local function try_worker_urls(worker_fn, build_args, timeout_ms)
     local function attempt(url, attempt_timeout_ms)
-        local channel = effil.channel()
-        local args = build_args(url)
-        local thr = effil.thread(worker_fn)(channel, url, unpack(args))
-        active_threads[#active_threads+1] = thr
-        return wait_for_channel(channel, attempt_timeout_ms)
+
+        local guard = 0
+        while DC.inflight >= DC.MAX_INFLIGHT and guard < 600 do
+            wait(50)
+            guard = guard + 1
+        end
+        DC.inflight = DC.inflight + 1
+
+        local result
+        local ok_args, args = pcall(build_args, url)
+        if not ok_args or type(args) ~= "table" then
+            result = { ok = false, err = "thread_start_fail: bad_args" }
+        else
+            local channel = effil.channel()
+            local ok_start, thr = pcall(function()
+                return DC.effil_start(worker_fn, channel, url, unpack(args))
+            end)
+            if ok_start then
+                result = wait_for_channel(channel, attempt_timeout_ms, thr)
+            else
+                result = { ok = false, err = "thread_start_fail: " .. tostring(thr) }
+            end
+        end
+
+        DC.inflight = math.max(DC.inflight - 1, 0)
+        return result
     end
 
     local has_fallback    = active_worker_url ~= WORKER_URL_FALLBACK
@@ -879,19 +1149,19 @@ local function try_worker_urls(worker_fn, build_args, timeout_ms)
         return result
     end
 
-    if has_fallback then
-        print(string.format("[EventScan] Основной Worker (%s) не ответил: %s. Пробую резервный (%s)...",
-            active_worker_url, tostring(result and result.err or "unknown_error"), WORKER_URL_FALLBACK))
+    if has_fallback and is_network_failure(result) then
+        print(string.format("[EventScan] пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ Worker (%s) пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ: %s. пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ (%s)...",
+            active_worker_url, tostring(result and result.err or "timeout"), WORKER_URL_FALLBACK))
 
         local fallback_result = attempt(WORKER_URL_FALLBACK, timeout_ms)
         if fallback_result and fallback_result.ok then
             active_worker_url = WORKER_URL_FALLBACK
-            print(string.format("[EventScan] Резервный Worker (%s) сработал. Переключаюсь на него до конца сессии.", WORKER_URL_FALLBACK))
+            print(string.format("[EventScan] пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ Worker (%s) пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ.", WORKER_URL_FALLBACK))
             return fallback_result
         end
 
-        print(string.format("[EventScan] Резервный Worker (%s) тоже не ответил: %s.",
-            WORKER_URL_FALLBACK, tostring(fallback_result and fallback_result.err or "unknown_error")))
+        print(string.format("[EventScan] пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ Worker (%s) пїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ: %s.",
+            WORKER_URL_FALLBACK, tostring(fallback_result and fallback_result.err or "timeout")))
 
         return fallback_result or result
     end
@@ -956,11 +1226,10 @@ local function resolve_hwid(callback)
     end
 
     local channel = effil.channel()
-    local thr = effil.thread(generate_hwid_worker)(channel)
-    active_threads[#active_threads+1] = thr
+    local thr = DC.effil_start(generate_hwid_worker, channel)
 
-    lua_thread.create(function()
-        local result = wait_for_channel(channel, 20000)
+    DC.spawn(function()
+        local result = wait_for_channel(channel, 20000, thr)
 
         local hwid
         if result and result.hwid and result.hwid ~= "" then
@@ -1332,7 +1601,7 @@ local screens_path_buf    = imgui_new.char[512](0)
 local screens_path_error  = ""
 local screens_path_open   = imgui_new.bool(false)
 local screens_path_busy   = false
-local screens_path_status = 'Идёт автопоиск, подождите...'
+local screens_path_status = 'пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ, пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ...'
 local screens_path_result = nil
 local screens_root_folder = nil
 
@@ -1371,20 +1640,15 @@ local function center_text(text, color)
     end
 end
 
--- ==================== Планировщик событий /esp (аналог plan.html) ====================
--- Та же логика, что и на сайте: даты -5..+3 от сегодня, слоты по 20 минут,
--- бронирование/просмотр/удаление через тот же воркер (/plan, /plan/delete),
--- автор определяется сервером по HWID (см. /check-hwid и /plan).
-
 local espl_open          = imgui_new.bool(false)
 local espl_dates         = nil
 local espl_selected_date = nil
-local espl_schedule      = {}      -- ["HH:MM"] = { author = ..., title = ... }
+local espl_schedule      = {}
 local espl_loading       = false
 local espl_load_error    = ""
 
 local espl_modal_open        = false
-local espl_modal_mode        = nil   -- "create" | "own" | "foreign"
+local espl_modal_mode        = nil
 local espl_modal_time         = nil
 local espl_modal_title_buf   = imgui_new.char[128](0)
 local espl_modal_view_author = ""
@@ -1392,15 +1656,76 @@ local espl_modal_view_title  = ""
 local espl_modal_busy        = false
 local espl_modal_error       = ""
 
--- Собственный "author" узнаём у сервера так же, как это делает plan.html
--- (через /check-hwid) — сравнивать напрямую с игровым ником нельзя, т.к.
--- author привязан к HWID в whitelist и может отличаться от текущего ника.
 local espl_local_author     = nil
 local espl_author_resolved  = false
 local espl_author_resolving = false
 
+local espl_panel = {
+    loading    = false,
+    loaded     = false,
+    error      = "",
+    author     = nil,
+    today      = 0,
+    week       = 0,
+    all        = 0,
+    balance    = 0,
+    avatar_file = SCRIPT_DIR .. "espl_avatar.png",
+    avatar_url   = nil,
+    avatar_tex   = nil,
+    avatar_ready = false,
+    refreshing   = false,
+}
+
+local espl_top3 = {}
+
+local function espl_format_balance(val)
+    local s = tostring(math.abs(val))
+    local result = ""
+    local len = #s
+    for i = 1, len do
+        result = result .. s:sub(i, i)
+        local remaining = len - i
+        if remaining > 0 and remaining % 3 == 0 then
+            result = result .. "."
+        end
+    end
+    if val < 0 then result = "-" .. result end
+    return "$" .. result
+end
+
+local function espl_load_my_stats()
+    if espl_panel.loading then return end
+    local hwid = get_hwid()
+    if not hwid then return end
+
+    espl_panel.loading = true
+    espl_panel.error   = ""
+    DC.spawn(function()
+        local result = try_worker_urls(my_stats_worker, function(url)
+            return { hwid }
+        end, 15000)
+
+        if result and result.ok then
+            espl_panel.author  = result.author
+            espl_panel.today   = result.reports_today or 0
+            espl_panel.week    = result.reports_week  or 0
+            espl_panel.all     = result.reports_all   or 0
+            espl_panel.balance = result.balance        or 0
+            espl_panel.loaded  = true
+            espl_panel.error   = ""
+        else
+            espl_panel.error = result and result.err or "unknown"
+        end
+        espl_panel.loading = false
+    end)
+end
+
 local function resolve_espl_author(callback)
-    if espl_author_resolved then
+
+    local avatar_retry = espl_panel.avatar_url ~= nil and not espl_panel.avatar_tex
+        and not espl_panel.avatar_ready and (espl_panel.avatar_tries or 0) < 3
+
+    if espl_author_resolved and not avatar_retry then
         if callback then callback(espl_local_author) end
         return
     end
@@ -1416,7 +1741,7 @@ local function resolve_espl_author(callback)
     end
 
     espl_author_resolving = true
-    lua_thread.create(function()
+    DC.spawn(function()
         local result = try_worker_urls(check_hwid_worker, function(url)
             return { hwid }
         end, 15000)
@@ -1424,18 +1749,180 @@ local function resolve_espl_author(callback)
         if result and result.ok and result.author then
             espl_local_author = result.author
         end
-        espl_author_resolved  = true
+
+        if result and result.ok and result.discord_avatar and result.discord_avatar ~= "" then
+            espl_panel.avatar_url = result.discord_avatar
+            if not espl_panel.avatar_ready and not espl_panel.avatar_tex
+                and (espl_panel.avatar_tries or 0) < 3 then
+                espl_panel.avatar_tries = (espl_panel.avatar_tries or 0) + 1
+
+                local hash = espl_panel.avatar_url:match("/avatars/%d+/([%w_]+)%.")
+                if hash then
+                    espl_panel.avatar_file = SCRIPT_DIR .. "espl_avatar_" .. hash .. ".png"
+                end
+
+                if DC.is_image_file(espl_panel.avatar_file) then
+
+                    espl_panel.avatar_ready = true
+                else
+                    os.remove(espl_panel.avatar_file)
+
+                    local avatar_fetch_url = active_worker_url:gsub("/+$", "")
+                        .. "/avatar-proxy?hwid=" .. DC.url_encode(hwid)
+                    local ch = effil.channel()
+                    local ok_s, thr = pcall(DC.effil_start, DC.avatar_worker,
+                        ch, avatar_fetch_url, espl_panel.avatar_file)
+                    if ok_s then
+                        local r = wait_for_channel(ch, 25000, thr)
+                        if r and r.ok and DC.is_image_file(espl_panel.avatar_file) then
+                            espl_panel.avatar_ready = true
+                        else
+                            print("[EventScan] пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: " .. tostring(r and r.err or "timeout"))
+                        end
+                    else
+                        print("[EventScan] пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: " .. tostring(thr))
+                    end
+                end
+            end
+        end
+
+        if result and result.ok then
+            espl_author_resolved = true
+        end
         espl_author_resolving = false
 
         if callback then callback(espl_local_author) end
     end)
 end
 
+local ESPL_AVATAR_REFRESH_TIMEOUT_MS = 120000
+local ESPL_AVATAR_REFRESH_POLL_MS    = 3000
+
+local function espl_refresh_avatar()
+    if espl_panel.refreshing then return end
+
+    local hwid = get_hwid()
+    if not hwid then
+        es_msg("HWID пїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ.", "FFAA00")
+        return
+    end
+
+    espl_panel.refreshing = true
+
+    DC.spawn(function()
+        local gen_result = try_worker_urls(gen_token_worker, function(url)
+            return { WORKER_TOKEN, hwid, "discord" }
+        end, 15000)
+
+        if not gen_result or not gen_result.ok or not gen_result.token then
+            local err = gen_result and gen_result.err or "timeout"
+            if is_hwid_error(err) then
+                notify_hwid_denied()
+            else
+                es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: " .. tostring(err), "FF4444")
+            end
+            espl_panel.refreshing = false
+            return
+        end
+
+        local token = gen_result.token
+        local base  = WORKER_URL_PRIMARY:gsub("/+$", "")
+        local url   = base .. "/discord-auth?token=" .. DC.url_encode(token)
+
+        local channel = effil.channel()
+        local thr = DC.effil_start(open_url_worker, channel, url)
+        local open_result = wait_for_channel(channel, 5000, thr)
+
+        if not (open_result and open_result.ok) then
+            copy_to_clipboard(url)
+            es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ.", "FF4444")
+        else
+            es_msg("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ Discord пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ...")
+        end
+
+        local waited    = 0
+        local completed = false
+
+        while waited < ESPL_AVATAR_REFRESH_TIMEOUT_MS do
+            wait(ESPL_AVATAR_REFRESH_POLL_MS)
+            waited = waited + ESPL_AVATAR_REFRESH_POLL_MS
+
+            local status_result = try_worker_urls(DC.token_status_worker, function(u)
+                return { token }
+            end, 10000)
+
+            if status_result and status_result.ok then
+                if status_result.used then
+                    completed = true
+                    break
+                end
+                if status_result.expired then
+                    break
+                end
+            end
+        end
+
+        if not completed then
+            espl_panel.refreshing = false
+            es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ (пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ). пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅ.", "FFAA00")
+            return
+        end
+
+        local r = try_worker_urls(check_hwid_worker, function(u)
+            return { hwid }
+        end, 15000)
+
+        if r and r.ok then
+            if r.author then
+                espl_local_author = r.author
+            end
+
+            if r.discord_avatar and r.discord_avatar ~= "" then
+                espl_panel.avatar_url   = r.discord_avatar
+                espl_panel.avatar_tex   = nil
+                espl_panel.avatar_ready = false
+                espl_panel.avatar_tries = 0
+
+                local hash = espl_panel.avatar_url:match("/avatars/%d+/([%w_]+)%.")
+                if hash then
+                    espl_panel.avatar_file = SCRIPT_DIR .. "espl_avatar_" .. hash .. ".png"
+                end
+
+                os.remove(espl_panel.avatar_file)
+
+                local avatar_fetch_url = active_worker_url:gsub("/+$", "")
+                    .. "/avatar-proxy?hwid=" .. DC.url_encode(hwid)
+                local ch = effil.channel()
+                local ok_s, thr2 = pcall(DC.effil_start, DC.avatar_worker,
+                    ch, avatar_fetch_url, espl_panel.avatar_file)
+                if ok_s then
+                    local dl_r = wait_for_channel(ch, 25000, thr2)
+                    if dl_r and dl_r.ok and DC.is_image_file(espl_panel.avatar_file) then
+                        espl_panel.avatar_ready = true
+                    else
+                        print("[EventScan] пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: " .. tostring(dl_r and dl_r.err or "timeout"))
+                    end
+                else
+                    print("[EventScan] пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: " .. tostring(thr2))
+                end
+            end
+
+            es_msg("пїЅпїЅпїЅпїЅпїЅпїЅ Discord пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ!")
+        else
+            es_msg("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ, пїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ: " .. tostring(r and r.err or "timeout"), "FFAA00")
+        end
+
+        espl_panel.refreshing = false
+    end)
+end
+
 local function espl_load_schedule(date_str, callback)
-    lua_thread.create(function()
+    DC.spawn(function()
         local result = try_worker_urls(plan_fetch_worker, function(url)
             return { date_str }
         end, 15000)
+
+        if date_str ~= espl_selected_date then return end
         callback(result)
     end)
 end
@@ -1450,8 +1937,89 @@ local function espl_apply_schedule_result(result)
         espl_schedule   = sched
         espl_load_error = ""
     else
-        espl_load_error = u8("Не удалось загрузить расписание: ") .. tostring(result and result.err or "timeout")
+        espl_load_error = u8("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: ") .. tostring(result and result.err or "timeout")
     end
+end
+
+function DC.esp_stop_polling()
+    DC.esp_epoch = DC.esp_epoch + 1
+    if DC.esp_thread then
+        pcall(function() DC.esp_thread:cancel(0) end)
+        DC.esp_thread = nil
+    end
+end
+
+function DC.esp_start_polling(date_str)
+    DC.esp_stop_polling()
+    local my_epoch = DC.esp_epoch
+    local version   = ""
+
+    DC.spawn(function()
+        while espl_open[0] and my_epoch == DC.esp_epoch and date_str == espl_selected_date do
+            local hwid = get_hwid()
+            if not hwid then
+                wait(1000)
+            else
+                local channel = effil.channel()
+
+                local ok_s, thr = pcall(DC.effil_start, DC.esp_wait_worker,
+                    channel, active_worker_url, hwid, date_str, version)
+
+                local result
+                if ok_s then
+
+                    if my_epoch == DC.esp_epoch then
+                        DC.esp_thread = thr
+                    end
+                    result = wait_for_channel(channel, 32000, thr)
+                    if DC.esp_thread == thr then
+                        DC.esp_thread = nil
+                    end
+                else
+                    result = { ok = false, err = "thread_start_fail: " .. tostring(thr) }
+                end
+
+                if not espl_open[0] or my_epoch ~= DC.esp_epoch or date_str ~= espl_selected_date then
+                    return
+                end
+
+                if result and result.ok then
+                    version = result.version or version
+                    if result.changed then
+                        espl_loading    = false
+                        espl_load_error = ""
+
+                        local sched = {}
+                        for _, s in ipairs(result.slots or {}) do
+                            sched[s.time] = { author = s.author, title = s.title }
+                        end
+                        espl_schedule = sched
+
+                        if result.stats then
+                            espl_panel.author  = result.stats.author
+                            espl_panel.today   = result.stats.reports_today or 0
+                            espl_panel.week    = result.stats.reports_week or 0
+                            espl_panel.all      = result.stats.reports_all or 0
+                            espl_panel.balance  = result.stats.balance or 0
+                            espl_panel.loaded   = true
+                            espl_panel.error    = ""
+                        end
+
+                        if result.top3 then
+                            espl_top3 = result.top3
+                        end
+                    end
+                else
+
+                    if espl_loading then
+                        espl_load_error = u8("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: ")
+                            .. tostring(result and result.err or "timeout")
+                    end
+                    wait(1000)
+                end
+            end
+        end
+    end)
 end
 
 local function espl_select_date(ds)
@@ -1460,16 +2028,13 @@ local function espl_select_date(ds)
     espl_schedule       = {}
     espl_loading        = true
     espl_load_error      = ""
-    espl_load_schedule(ds, espl_apply_schedule_result)
+    DC.esp_start_polling(ds)
 end
 
--- ==================== Цвета авторов + вспомогательное для отрисовки ====================
--- Каждому автору присваивается стабильный (детерминированный) цвет на основе
--- хеша его имени — без localStorage, как в plan.html, но с тем же эффектом:
--- у одного и того же автора всегда один и тот же цвет.
-
 local ESPL_AMBER = "d4a24e"
-local ESPL_ELLIPSIS = u8("…")
+local ESPL_ELLIPSIS = u8("пїЅ")
+
+local ESPL_MEDAL_COLORS = { "FFD700", "C0C0C0", "CD7F32" }
 
 local function espl_string_hash(str)
     local hash = 5381
@@ -1497,10 +2062,8 @@ end
 
 local espl_author_color_cache = {}
 
--- Возвращает набор ImVec4-цветов для конкретного автора: яркая обводка,
--- приглушённый фон, версии для наведения/приглушённого (прошедшего) состояния.
 local function espl_author_colors(author)
-    local key = (author and author ~= "") and author or "—"
+    local key = (author and author ~= "") and author or "пїЅ"
     local cached = espl_author_color_cache[key]
     if cached then return cached end
 
@@ -1519,17 +2082,12 @@ local function espl_author_colors(author)
     return colors
 end
 
--- В карточках слотов показываем только ник до "_" (полное "Nick_Name"
--- используется для цвета/сравнения/фильтрации "свой/чужой", но занимает
--- слишком много места на маленькой кнопке слота).
 local function espl_short_nick(author)
     if not author or author == "" then return author end
     local nick = author:match("^([^_]+)")
     return nick or author
 end
 
--- Обрезка строки по ширине с многоточием, безопасная для многобайтового UTF-8
--- (не режет символ Cyrillic пополам).
 local function espl_truncate_to_width(text, max_width)
     if text == "" or imgui.CalcTextSize(text).x <= max_width then
         return text
@@ -1588,7 +2146,7 @@ imgui.OnFrame(function() return espl_open[0] end, function()
             local tbl       = os.date("!*t", t)
             local is_today  = ds == today_ds
             local is_active = ds == espl_selected_date
-            local dow_text  = is_today and "Сегодня" or DOW_LABELS_RU[tbl.wday]
+            local dow_text  = is_today and "пїЅпїЅпїЅпїЅпїЅпїЅпїЅ" or DOW_LABELS_RU[tbl.wday]
             local date_text = string.format("%02d.%02d", tbl.day, tbl.month)
 
             local tab_bg, tab_border, tab_text
@@ -1665,7 +2223,7 @@ imgui.OnFrame(function() return espl_open[0] end, function()
             status_text  = espl_load_error
             status_color = imgui.ImVec4(1, 0.35, 0.35, 1)
         elseif espl_loading then
-            status_text  = u8("Загрузка расписания...")
+            status_text  = u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ...")
         end
 
         if status_text ~= "" then
@@ -1767,7 +2325,231 @@ imgui.OnFrame(function() return espl_open[0] end, function()
         if i % cols ~= 0 then imgui.SameLine() end
     end
 
+    local main_win_pos  = imgui.GetWindowPos()
+    local main_win_size = imgui.GetWindowSize()
+
     imgui.End()
+
+    local SIDE_GAP = 8
+    imgui.SetNextWindowPos(
+        imgui.ImVec2(main_win_pos.x + main_win_size.x + SIDE_GAP, main_win_pos.y),
+        imgui.Cond.Always
+    )
+
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 6))
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 14))
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.055, 0.075, 0.055, 0.98))
+    imgui.PushStyleColor(imgui.Col.Border, hexcol(GREEN_MID))
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
+
+    imgui.Begin('##espl_side_panel', nil,
+        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize +
+        imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoTitleBar +
+        imgui.WindowFlags.AlwaysAutoResize + imgui.WindowFlags.NoMove)
+
+    local SIDE_W = 180
+
+    local avatar_size = 64
+    local avatar_rounding = 10
+    local content_w = imgui.GetContentRegionAvail().x
+    local avatar_offset_x = (content_w - avatar_size) / 2
+    if avatar_offset_x > 0 then
+        imgui.SetCursorPosX(imgui.GetCursorPosX() + avatar_offset_x)
+    end
+    local avatar_pos = imgui.GetCursorScreenPos()
+    imgui.Dummy(imgui.ImVec2(avatar_size, avatar_size))
+    local draw_list = imgui.GetWindowDrawList()
+    local avatar_p2 = imgui.ImVec2(avatar_pos.x + avatar_size, avatar_pos.y + avatar_size)
+
+    if espl_panel.avatar_ready and not espl_panel.avatar_tex then
+
+        local ok_tex, tex = pcall(imgui.CreateTextureFromFile, espl_panel.avatar_file)
+        if ok_tex and tex then
+            espl_panel.avatar_tex = tex
+        end
+        espl_panel.avatar_ready = false
+        if not espl_panel.avatar_tex then
+            os.remove(espl_panel.avatar_file)
+            print("[EventScan] пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ, пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ.")
+        end
+    end
+
+    if espl_panel.avatar_tex then
+
+        draw_list:AddImageRounded(
+            espl_panel.avatar_tex,
+            avatar_pos, avatar_p2,
+            imgui.ImVec2(0, 0), imgui.ImVec2(1, 1),
+            0xFFFFFFFF,
+            avatar_rounding
+        )
+
+        draw_list:AddRect(avatar_pos, avatar_p2,
+            imgui.ColorConvertFloat4ToU32(hexcol(GREEN_MID, 0.6)),
+            avatar_rounding, 15, 1.5
+        )
+    else
+
+        draw_list:AddRect(avatar_pos, avatar_p2,
+            imgui.ColorConvertFloat4ToU32(hexcol(GREEN_MID, 0.6)),
+            avatar_rounding, 15, 1.5
+        )
+        local icon_text = "?"
+        local icon_w = imgui.CalcTextSize(icon_text).x
+        local icon_h = imgui.GetTextLineHeight()
+        draw_list:AddText(
+            imgui.ImVec2(avatar_pos.x + (avatar_size - icon_w) / 2, avatar_pos.y + (avatar_size - icon_h) / 2),
+            imgui.ColorConvertFloat4ToU32(hexcol(GREEN_MID, 0.4)), icon_text
+        )
+    end
+
+    imgui.Spacing()
+
+    if espl_panel.loading then
+        center_text(u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ..."), hexcol(GREEN_BRIGHT, 0.7))
+    elseif espl_panel.error ~= "" then
+        center_text(u8("пїЅпїЅпїЅпїЅпїЅпїЅ"), imgui.ImVec4(1, 0.35, 0.35, 1))
+    else
+
+        local nick_display = espl_panel.author or espl_local_author or "пїЅ"
+        center_text(nick_display, hexcol(GREEN_BRIGHT))
+
+        imgui.Spacing()
+        imgui.PushStyleColor(imgui.Col.Separator, hexcol(GREEN_MID, 0.3))
+        imgui.Separator()
+        imgui.PopStyleColor(1)
+        imgui.Spacing()
+
+        local bal_str = espl_format_balance(espl_panel.balance)
+        local bal_color = espl_panel.balance >= 0
+            and hexcol(GREEN_BRIGHT)
+            or imgui.ImVec4(1, 0.35, 0.35, 1)
+        center_text(bal_str, bal_color)
+
+        imgui.Spacing()
+        imgui.PushStyleColor(imgui.Col.Separator, hexcol(GREEN_MID, 0.3))
+        imgui.Separator()
+        imgui.PopStyleColor(1)
+        imgui.Spacing()
+
+        local label_color = imgui.ImVec4(0.65, 0.75, 0.65, 1)
+        local value_color = imgui.ImVec4(1, 1, 1, 1)
+
+        imgui.TextColored(label_color, u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅ:"))
+        imgui.SameLine(SIDE_W - imgui.CalcTextSize(tostring(espl_panel.today)).x)
+        imgui.TextColored(value_color, tostring(espl_panel.today))
+
+        imgui.TextColored(label_color, u8("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ:"))
+        imgui.SameLine(SIDE_W - imgui.CalcTextSize(tostring(espl_panel.week)).x)
+        imgui.TextColored(value_color, tostring(espl_panel.week))
+
+        imgui.TextColored(label_color, u8("пїЅпїЅпїЅпїЅпїЅ:"))
+        imgui.SameLine(SIDE_W - imgui.CalcTextSize(tostring(espl_panel.all)).x)
+        imgui.TextColored(value_color, tostring(espl_panel.all))
+
+        imgui.Spacing()
+        imgui.PushStyleColor(imgui.Col.Separator, hexcol(GREEN_MID, 0.3))
+        imgui.Separator()
+        imgui.PopStyleColor(1)
+        imgui.Spacing()
+
+        if espl_panel.refreshing then
+            center_text(u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ..."), hexcol(GREEN_BRIGHT, 0.7))
+        else
+            if imgui.Button(u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ"), imgui.ImVec2(SIDE_W, 26)) then
+                espl_refresh_avatar()
+            end
+        end
+    end
+
+    local side_win_pos  = imgui.GetWindowPos()
+    local side_win_size = imgui.GetWindowSize()
+
+    imgui.End()
+
+    local top3_win_x      = side_win_pos.x
+    local top3_win_y      = side_win_pos.y + side_win_size.y + SIDE_GAP
+    local top3_win_w      = side_win_size.x
+    local top3_win_h      = math.max(
+        (main_win_pos.y + main_win_size.y) - top3_win_y,
+        60
+    )
+
+    imgui.SetNextWindowPos(imgui.ImVec2(top3_win_x, top3_win_y), imgui.Cond.Always)
+    imgui.SetNextWindowSize(imgui.ImVec2(top3_win_w, top3_win_h), imgui.Cond.Always)
+
+    imgui.Begin('##espl_top3_panel', nil,
+        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize +
+        imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoTitleBar +
+        imgui.WindowFlags.NoMove + imgui.WindowFlags.NoScrollbar +
+        imgui.WindowFlags.NoScrollWithMouse)
+
+    local top3_content_w = imgui.GetContentRegionAvail().x
+
+    center_text(u8("пїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ"), hexcol(GREEN_BRIGHT))
+    imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Separator, hexcol(GREEN_MID, 0.3))
+    imgui.Separator()
+    imgui.PopStyleColor(1)
+    imgui.Spacing()
+
+    if #espl_top3 == 0 then
+        center_text(u8("пїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ"), imgui.ImVec4(0.6, 0.6, 0.6, 1))
+        imgui.Dummy(imgui.ImVec2(top3_content_w, 4))
+    else
+        local n           = #espl_top3
+        local BAR_MAX_W   = top3_content_w
+        local avail_h     = imgui.GetContentRegionAvail().y
+        local row_h       = avail_h / n
+        local text_h      = imgui.GetTextLineHeight()
+        local row_start_y = imgui.GetCursorPosY()
+
+        local max_count = (espl_top3[1] and espl_top3[1].count) or 1
+        if not max_count or max_count <= 0 then max_count = 1 end
+
+        for i, entry in ipairs(espl_top3) do
+            local row_top = row_start_y + (i - 1) * row_h
+            local gap     = math.min(4, row_h * 0.12)
+            local bar_h   = math.max(row_h - text_h - gap, 4)
+
+            local medal_hex = ESPL_MEDAL_COLORS[i] or GREEN_MID
+            local count_val = entry.count or 0
+            local frac      = math.max(count_val / max_count, 0.04)
+            local bar_w     = math.max(BAR_MAX_W * frac, 4)
+
+            local nick       = espl_short_nick(entry.author) or entry.author or "пїЅ"
+            local count_str  = tostring(count_val)
+            local label      = i .. ". " .. nick
+            local label_max_w = BAR_MAX_W - imgui.CalcTextSize(count_str).x - 8
+
+            imgui.SetCursorPosY(row_top)
+            imgui.TextColored(hexcol(medal_hex), espl_truncate_to_width(label, label_max_w))
+            imgui.SameLine(BAR_MAX_W - imgui.CalcTextSize(count_str).x)
+            imgui.TextColored(imgui.ImVec4(1, 1, 1, 1), count_str)
+
+            imgui.SetCursorPosY(row_top + text_h + gap)
+            local bar_pos   = imgui.GetCursorScreenPos()
+            local draw_list = imgui.GetWindowDrawList()
+            draw_list:AddRectFilled(
+                bar_pos,
+                imgui.ImVec2(bar_pos.x + BAR_MAX_W, bar_pos.y + bar_h),
+                imgui.ColorConvertFloat4ToU32(imgui.ImVec4(1, 1, 1, 0.08)), 4
+            )
+            draw_list:AddRectFilled(
+                bar_pos,
+                imgui.ImVec2(bar_pos.x + bar_w, bar_pos.y + bar_h),
+                imgui.ColorConvertFloat4ToU32(hexcol(medal_hex, 0.85)), 4
+            )
+        end
+        imgui.SetCursorPosY(row_start_y + avail_h)
+    end
+
+    imgui.End()
+
+    imgui.PopStyleColor(3)
+    imgui.PopStyleVar(4)
 
     imgui.PopStyleColor(8)
     imgui.PopStyleVar(4)
@@ -1800,13 +2582,6 @@ imgui.OnFrame(function() return espl_modal_open end, function()
         imgui.Cond.Always, imgui.ImVec2(0.5, 0.5)
     )
 
-    -- Модалка обязана быть поверх основного окна планировщика всегда, а не
-    -- только в момент открытия: ImGui сортирует окна по z-order на основе
-    -- фокуса, и клик по основному окну (сквозь промежутки между слотами,
-    -- скролл и т.п.) мог перетащить фокус на него и утопить модалку под
-    -- ним. Поэтому каждый кадр, пока модалка открыта, принудительно
-    -- отдаём ей фокус до вызова Begin — тогда она гарантированно рисуется
-    -- последней (сверху) и не может провалиться под основное окно.
     imgui.SetNextWindowFocus()
 
     imgui.Begin('##espl_modal_window', nil,
@@ -1815,11 +2590,11 @@ imgui.OnFrame(function() return espl_modal_open end, function()
 
     local MODAL_CONTENT_W = 300
 
-    center_text(u8(tostring(espl_selected_date) .. " · " .. tostring(espl_modal_time)), hexcol(GREEN_BRIGHT))
+    center_text(u8(tostring(espl_selected_date) .. " пїЅ " .. tostring(espl_modal_time)), hexcol(GREEN_BRIGHT))
     imgui.Spacing()
 
     if espl_modal_mode == "foreign" then
-        imgui.Text(u8("Автор:"))
+        imgui.Text(u8("пїЅпїЅпїЅпїЅпїЅ:"))
         imgui.SameLine()
         do
             local draw_list   = imgui.GetWindowDrawList()
@@ -1836,7 +2611,7 @@ imgui.OnFrame(function() return espl_modal_open end, function()
         imgui.TextColored(modal_author_colors.accent, espl_modal_view_author)
 
         imgui.Spacing()
-        imgui.Text(u8("Название:"))
+        imgui.Text(u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ:"))
         imgui.PushTextWrapPos(imgui.GetCursorPosX() + MODAL_CONTENT_W)
         imgui.TextWrapped(espl_modal_view_title)
         imgui.PopTextWrapPos()
@@ -1854,9 +2629,9 @@ imgui.OnFrame(function() return espl_modal_open end, function()
     imgui.Spacing()
 
     if espl_modal_busy then
-        center_text(u8("Отправка..."), hexcol(GREEN_BRIGHT))
+        center_text(u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ..."), hexcol(GREEN_BRIGHT))
     elseif espl_modal_mode == "foreign" then
-        if imgui.Button(u8("Закрыть"), imgui.ImVec2(MODAL_CONTENT_W, 32)) then
+        if imgui.Button(u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅ"), imgui.ImVec2(MODAL_CONTENT_W, 32)) then
             espl_modal_open = false
         end
     else
@@ -1866,22 +2641,22 @@ imgui.OnFrame(function() return espl_modal_open end, function()
         local btn_count  = has_delete and 3 or 2
         local btn_w      = (avail - gap * (btn_count - 1)) / btn_count
 
-        if imgui.Button(u8("Сохранить"), imgui.ImVec2(btn_w, 32)) then
+        if imgui.Button(u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ"), imgui.ImVec2(btn_w, 32)) then
             local title = ffi.string(espl_modal_title_buf)
             title = title:gsub('^%s+', ''):gsub('%s+$', '')
 
             if title == "" then
-                espl_modal_error = u8("Введите название мероприятия")
+                espl_modal_error = u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ")
             else
                 local hwid = get_hwid()
                 if not hwid then
-                    espl_modal_error = u8("HWID ещё не определён")
+                    espl_modal_error = u8("HWID пїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ")
                 else
                     espl_modal_busy = true
                     local time = espl_modal_time
                     local date = espl_selected_date
 
-                    lua_thread.create(function()
+                    DC.spawn(function()
                         local result = try_worker_urls(plan_save_worker, function(url)
                             return { hwid, date, time, title }
                         end, 15000)
@@ -1892,7 +2667,7 @@ imgui.OnFrame(function() return espl_modal_open end, function()
                             espl_modal_open = false
                         else
                             local err = result and result.err or "timeout"
-                            espl_modal_error = u8("Ошибка сохранения: ") .. tostring(err)
+                            espl_modal_error = u8("пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: ") .. tostring(err)
                         end
                     end)
                 end
@@ -1902,16 +2677,16 @@ imgui.OnFrame(function() return espl_modal_open end, function()
         imgui.SameLine(0, gap)
 
         if has_delete then
-            if imgui.Button(u8("Удалить"), imgui.ImVec2(btn_w, 32)) then
+            if imgui.Button(u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅ"), imgui.ImVec2(btn_w, 32)) then
                 local hwid = get_hwid()
                 if not hwid then
-                    espl_modal_error = u8("HWID ещё не определён")
+                    espl_modal_error = u8("HWID пїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ")
                 else
                     espl_modal_busy = true
                     local time = espl_modal_time
                     local date = espl_selected_date
 
-                    lua_thread.create(function()
+                    DC.spawn(function()
                         local result = try_worker_urls(plan_delete_worker, function(url)
                             return { hwid, date, time }
                         end, 15000)
@@ -1922,7 +2697,7 @@ imgui.OnFrame(function() return espl_modal_open end, function()
                             espl_modal_open = false
                         else
                             local err = result and result.err or "timeout"
-                            espl_modal_error = u8("Ошибка удаления: ") .. tostring(err)
+                            espl_modal_error = u8("пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: ") .. tostring(err)
                         end
                     end)
                 end
@@ -1930,7 +2705,7 @@ imgui.OnFrame(function() return espl_modal_open end, function()
             imgui.SameLine(0, gap)
         end
 
-        if imgui.Button(u8("Отмена"), imgui.ImVec2(btn_w, 32)) then
+        if imgui.Button(u8("пїЅпїЅпїЅпїЅпїЅпїЅ"), imgui.ImVec2(btn_w, 32)) then
             espl_modal_open = false
         end
     end
@@ -1941,31 +2716,28 @@ imgui.OnFrame(function() return espl_modal_open end, function()
     imgui.PopStyleVar(5)
 end)
 
--- ==================== Всплывающее уведомление снизу экрана ====================
--- Тост с анимацией
 local toast_visible = imgui_new.bool(false)
 local toast_state = {
     text       = "",
     color      = nil,
-    anim_time  = 0,      -- время анимации (0 до 1)
-    start_tick = 0,      -- время начала показа
-    closing    = false   -- флаг закрытия
+    anim_time  = 0,
+    start_tick = 0,
+    closing    = false
 }
 
-local TOAST_ANIM_DURATION = 0.3  -- длительность анимации появления в секундах
-local TOAST_CLOSE_DURATION = 0.25 -- длительность анимации закрытия в секундах
+local TOAST_ANIM_DURATION = 0.3
+local TOAST_CLOSE_DURATION = 0.25
 
 local function show_toast(text, color_hex)
-    -- Не показываем тост, если открыто окно настроек
+
     if screens_path_open[0] then
         return
     end
-    
+
     toast_state.text    = text
     toast_state.color   = color_hex and hexcol(color_hex) or hexcol(GREEN_BRIGHT)
     toast_state.closing = false
-    
-    -- Если окно уже показывается, просто обновляем текст без перезапуска анимации
+
     if not toast_visible[0] then
         toast_state.anim_time  = 0
         toast_state.start_tick = os.clock()
@@ -1981,7 +2753,6 @@ local function hide_toast()
     end
 end
 
--- ==================== Всплывающее уведомление для /ess ====================
 local ess_toast_visible = imgui_new.bool(false)
 local ess_toast_state = {
     text       = "",
@@ -1998,11 +2769,11 @@ local function show_ess_toast(text, color_hex)
     if screens_path_open[0] then
         return
     end
-    
+
     ess_toast_state.text    = text
     ess_toast_state.color   = color_hex and hexcol(color_hex) or hexcol(GREEN_BRIGHT)
     ess_toast_state.closing = false
-    
+
     if not ess_toast_visible[0] then
         ess_toast_state.anim_time  = 0
         ess_toast_state.start_tick = os.clock()
@@ -2018,63 +2789,55 @@ local function hide_ess_toast()
     end
 end
 
--- Уменьшенный размер окна без иконок
 local TOAST_PAD = 12
 
 imgui.OnFrame(function() return toast_visible[0] and not screens_path_open[0] end, function()
-    -- Обновляем время анимации
+
     local elapsed = os.clock() - toast_state.start_tick
-    
+
     local anim_progress
     if toast_state.closing then
-        -- Анимация закрытия
+
         toast_state.anim_time = math.min(elapsed / TOAST_CLOSE_DURATION, 1.0)
-        
-        -- Если анимация закрытия завершена, скрываем окно
+
         if toast_state.anim_time >= 1.0 then
             toast_visible[0] = false
             toast_state.closing = false
             return
         end
-        
-        -- Инвертируем прогресс для закрытия (от 1 до 0)
+
         anim_progress = 1.0 - toast_state.anim_time
     else
-        -- Анимация открытия
+
         toast_state.anim_time = math.min(elapsed / TOAST_ANIM_DURATION, 1.0)
         anim_progress = toast_state.anim_time
     end
-    
-    -- Функция easing для плавной анимации (ease-out для открытия, ease-in для закрытия)
+
     local function ease_out_cubic(t)
         return 1 - math.pow(1 - t, 3)
     end
-    
+
     local function ease_in_cubic(t)
         return t * t * t
     end
-    
+
     local eased_progress
     if toast_state.closing then
         eased_progress = ease_in_cubic(anim_progress)
     else
         eased_progress = ease_out_cubic(anim_progress)
     end
-    
-    -- Увеличенное окно для большого текста
+
     local win_w, win_h = 160, 40
     local imgui_io = imgui.GetIO()
     local screen_w = imgui_io.DisplaySize.x
     local screen_h = imgui_io.DisplaySize.y
 
-    -- Опускаем почти к самому низу экрана (оставляем только 8 пикселей от края)
     local final_pos_y = screen_h - win_h - 8
-    
-    -- Анимация: окно появляется/исчезает снизу
-    local start_offset = 30  -- начальное смещение вниз
+
+    local start_offset = 30
     local pos_y = final_pos_y + start_offset * (1 - eased_progress)
-    
-    -- Анимация прозрачности
+
     local alpha = 0.97 * eased_progress
 
     imgui.SetNextWindowPos(imgui.ImVec2(screen_w / 2, pos_y), imgui.Cond.Always, imgui.ImVec2(0.5, 0))
@@ -2084,7 +2847,7 @@ imgui.OnFrame(function() return toast_visible[0] and not screens_path_open[0] en
     imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 18)
     imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 2.0)
     imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(10, 8))
-    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))  -- прозрачный фон
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
     imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(
         hexcol(GREEN_MID).x,
         hexcol(GREEN_MID).y,
@@ -2097,14 +2860,12 @@ imgui.OnFrame(function() return toast_visible[0] and not screens_path_open[0] en
         imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoFocusOnAppearing +
         imgui.WindowFlags.NoInputs + imgui.WindowFlags.NoNav)
 
-    -- Рисуем внутреннюю рамку для создания промежутка между фоном и обводкой
     local draw_list = imgui.GetWindowDrawList()
     local win_pos = imgui.GetWindowPos()
     local win_size = imgui.GetWindowSize()
-    local gap = 3  -- промежуток в пикселях
-    local inner_rounding = 15  -- скругление внутренней рамки (меньше чем внешнее)
-    
-    -- Рисуем внутренний скругленный прямоугольник (фон)
+    local gap = 3
+    local inner_rounding = 15
+
     draw_list:AddRectFilled(
         imgui.ImVec2(win_pos.x + gap, win_pos.y + gap),
         imgui.ImVec2(win_pos.x + win_size.x - gap, win_pos.y + win_size.y - gap),
@@ -2114,26 +2875,20 @@ imgui.OnFrame(function() return toast_visible[0] and not screens_path_open[0] en
 
     imgui.Dummy(imgui.ImVec2(0, 4))
 
-    -- Тост без градиентного тега - просто текст
-
     imgui.Spacing()
 
-    -- Крупный шрифт для тоста (настоящий шрифт нужного размера, без растяжки)
     local using_toast_font = toast_font ~= nil
     if using_toast_font then
         imgui.PushFont(toast_font)
     end
 
-    -- Упрощенная отрисовка текста без иконок
     local text = toast_state.text
     local text_color = toast_state.color
     local win_size = imgui.GetWindowSize()
     local line_h = imgui.GetTextLineHeight()
-    
-    -- Центрируем текст по вертикали
+
     imgui.SetCursorPosY((win_size.y - line_h) / 2)
-    
-    -- Центрируем текст по горизонтали
+
     local text_w = imgui.CalcTextSize(text).x
     local avail_w = win_size.x - (TOAST_PAD * 2)
     if text_w < avail_w then
@@ -2141,11 +2896,11 @@ imgui.OnFrame(function() return toast_visible[0] and not screens_path_open[0] en
     else
         imgui.SetCursorPosX(TOAST_PAD)
     end
-    
+
     imgui.PushTextWrapPos(win_size.x - TOAST_PAD)
-    
+
     if text_color then
-        -- Применяем альфа-канал к цвету текста для анимации
+
         imgui.TextColored(imgui.ImVec4(
             text_color.x,
             text_color.y,
@@ -2155,7 +2910,7 @@ imgui.OnFrame(function() return toast_visible[0] and not screens_path_open[0] en
     else
         imgui.TextColored(imgui.ImVec4(1, 1, 1, eased_progress), text)
     end
-    
+
     imgui.PopTextWrapPos()
 
     if using_toast_font then
@@ -2166,43 +2921,42 @@ imgui.OnFrame(function() return toast_visible[0] and not screens_path_open[0] en
 
     imgui.PopStyleColor(2)
     imgui.PopStyleVar(3)
-end).HideCursor = true  -- Отключаем курсор мыши для тоста
+end).HideCursor = true
 
--- ==================== Окно для отправки отчёта /ess ====================
 imgui.OnFrame(function() return ess_toast_visible[0] and not screens_path_open[0] end, function()
     local elapsed = os.clock() - ess_toast_state.start_tick
-    
+
     local anim_progress
     if ess_toast_state.closing then
         ess_toast_state.anim_time = math.min(elapsed / ESS_TOAST_CLOSE_DURATION, 1.0)
-        
+
         if ess_toast_state.anim_time >= 1.0 then
             ess_toast_visible[0] = false
             ess_toast_state.closing = false
             return
         end
-        
+
         anim_progress = 1.0 - ess_toast_state.anim_time
     else
         ess_toast_state.anim_time = math.min(elapsed / ESS_TOAST_ANIM_DURATION, 1.0)
         anim_progress = ess_toast_state.anim_time
     end
-    
+
     local function ease_out_cubic(t)
         return 1 - math.pow(1 - t, 3)
     end
-    
+
     local function ease_in_cubic(t)
         return t * t * t
     end
-    
+
     local eased_progress
     if ess_toast_state.closing then
         eased_progress = ease_in_cubic(anim_progress)
     else
         eased_progress = ease_out_cubic(anim_progress)
     end
-    
+
     local win_w, win_h = 200, 40
     local imgui_io = imgui.GetIO()
     local screen_w = imgui_io.DisplaySize.x
@@ -2220,7 +2974,7 @@ imgui.OnFrame(function() return ess_toast_visible[0] and not screens_path_open[0
     imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 18)
     imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 2.0)
     imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(10, 8))
-    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))  -- прозрачный фон
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
     imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(
         hexcol(GREEN_MID).x,
         hexcol(GREEN_MID).y,
@@ -2233,14 +2987,12 @@ imgui.OnFrame(function() return ess_toast_visible[0] and not screens_path_open[0
         imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoFocusOnAppearing +
         imgui.WindowFlags.NoInputs + imgui.WindowFlags.NoNav)
 
-    -- Рисуем внутреннюю рамку для создания промежутка между фоном и обводкой
     local draw_list = imgui.GetWindowDrawList()
     local win_pos = imgui.GetWindowPos()
     local win_size = imgui.GetWindowSize()
-    local gap = 3  -- промежуток в пикселях
-    local inner_rounding = 15  -- скругление внутренней рамки (меньше чем внешнее)
-    
-    -- Рисуем внутренний скругленный прямоугольник (фон)
+    local gap = 3
+    local inner_rounding = 15
+
     draw_list:AddRectFilled(
         imgui.ImVec2(win_pos.x + gap, win_pos.y + gap),
         imgui.ImVec2(win_pos.x + win_size.x - gap, win_pos.y + win_size.y - gap),
@@ -2260,9 +3012,9 @@ imgui.OnFrame(function() return ess_toast_visible[0] and not screens_path_open[0
     local text_color = ess_toast_state.color
     local win_size = imgui.GetWindowSize()
     local line_h = imgui.GetTextLineHeight()
-    
+
     imgui.SetCursorPosY((win_size.y - line_h) / 2)
-    
+
     local text_w = imgui.CalcTextSize(text).x
     local avail_w = win_size.x - (TOAST_PAD * 2)
     if text_w < avail_w then
@@ -2270,9 +3022,9 @@ imgui.OnFrame(function() return ess_toast_visible[0] and not screens_path_open[0
     else
         imgui.SetCursorPosX(TOAST_PAD)
     end
-    
+
     imgui.PushTextWrapPos(win_size.x - TOAST_PAD)
-    
+
     if text_color then
         imgui.TextColored(imgui.ImVec4(
             text_color.x,
@@ -2283,7 +3035,7 @@ imgui.OnFrame(function() return ess_toast_visible[0] and not screens_path_open[0
     else
         imgui.TextColored(imgui.ImVec4(1, 1, 1, eased_progress), text)
     end
-    
+
     imgui.PopTextWrapPos()
 
     if using_toast_font then
@@ -2294,7 +3046,7 @@ imgui.OnFrame(function() return ess_toast_visible[0] and not screens_path_open[0
 
     imgui.PopStyleColor(2)
     imgui.PopStyleVar(3)
-end).HideCursor = true  -- Отключаем курсор мыши для ess тоста
+end).HideCursor = true
 
 local ok_cdef_ansi = pcall(function()
     ffi.cdef[[
@@ -2359,11 +3111,11 @@ imgui.OnFrame(function() return screens_path_open[0] end, function()
 
     local window_height = (screens_path_error ~= "") and 242 or 218
     imgui.SetNextWindowSize(imgui.ImVec2(520, window_height), imgui.Cond.Always)
-    imgui.Begin(u8('Настройка EventScan'), nil,
+    imgui.Begin(u8('пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ EventScan'), nil,
         imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoSavedSettings)
-    center_text(u8('Не найдена папка со скриншотами (arizona\\screens).'))
-    center_text(u8('Вставьте путь, нажмите "Обзор..." или "Авто" для автопоиска.'))
-    center_text(u8('Путь к папке:'), hexcol(GREEN_BRIGHT))
+    center_text(u8('пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ (arizona\\screens).'))
+    center_text(u8('пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ, пїЅпїЅпїЅпїЅпїЅпїЅпїЅ "пїЅпїЅпїЅпїЅпїЅ..." пїЅпїЅпїЅ "пїЅпїЅпїЅпїЅ" пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ.'))
+    center_text(u8('пїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅ:'), hexcol(GREEN_BRIGHT))
     imgui.PushItemWidth(-1)
     imgui.InputText('##screens_path_input', screens_path_buf, ffi.sizeof(screens_path_buf))
     imgui.PopItemWidth()
@@ -2384,27 +3136,27 @@ imgui.OnFrame(function() return screens_path_open[0] end, function()
         local avail_w = imgui.GetContentRegionAvail().x
         local btn_w = (avail_w - gap * 2) / 3
 
-        if imgui.Button(u8('Готово'), imgui.ImVec2(btn_w, 34)) then
+        if imgui.Button(u8('пїЅпїЅпїЅпїЅпїЅпїЅ'), imgui.ImVec2(btn_w, 34)) then
             local path = ffi.string(screens_path_buf)
             path = path:gsub('^%s+', ''):gsub('%s+$', ''):gsub('"', '')
 
             path = utf8_to_ansi(path)
             if path == "" then
-                screens_path_error = "Введите путь к папке"
+                screens_path_error = "пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅ"
             elseif not is_dir(path) then
-                screens_path_error = "Такой папки не существует"
+                screens_path_error = "пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ"
             else
                 screens_path_error = ""
                 screens_path_result = { mode = "manual", path = path }
             end
         end
         imgui.SameLine(0, gap)
-        if imgui.Button(u8('Обзор...'), imgui.ImVec2(btn_w, 34)) then
+        if imgui.Button(u8('пїЅпїЅпїЅпїЅпїЅ...'), imgui.ImVec2(btn_w, 34)) then
             screens_path_error = ""
             screens_path_result = { mode = "browse" }
         end
         imgui.SameLine(0, gap)
-        if imgui.Button(u8('Авто'), imgui.ImVec2(btn_w, 34)) then
+        if imgui.Button(u8('пїЅпїЅпїЅпїЅ'), imgui.ImVec2(btn_w, 34)) then
             screens_path_error = ""
             screens_path_result = { mode = "auto" }
         end
@@ -2429,7 +3181,7 @@ local function resolve_screens_root(callback)
     screens_path_result  = nil
     screens_path_open[0] = true
 
-    lua_thread.create(function()
+    DC.spawn(function()
         while true do
             while screens_path_result == nil do
                 wait(50)
@@ -2442,7 +3194,7 @@ local function resolve_screens_root(callback)
 
                 screens_path_error  = ""
                 screens_path_busy   = true
-                screens_path_status = 'Проверяю папку — жду тестовый скриншот (F8)...'
+                screens_path_status = 'пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ (F8)...'
 
                 local ok = verify_screens_folder(action.path)
                 screens_path_busy = false
@@ -2450,33 +3202,30 @@ local function resolve_screens_root(callback)
                 if ok then
                     screens_path_open[0] = false
                     save_cached_screens_root(action.path)
-                    es_msg("Папка подтверждена — тестовый скриншот найден!")
+                    es_msg("пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ!")
                     callback(action.path)
                     return
                 else
-                    screens_path_error = "Тестовый скриншот не появился в этой папке за отведённое время. Проверьте путь и попробуйте снова."
-
+                    screens_path_error = "пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ."
                 end
             elseif action.mode == "browse" then
 
                 screens_path_error   = ""
                 screens_path_busy    = true
-                screens_path_status  = 'Открыт системный диалог выбора папки...'
+                screens_path_status  = 'пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ...'
 
                 local browse_channel = effil.channel()
-                local browse_thr = effil.thread(browse_folder_worker)(
-                    browse_channel, u8('Выберите папку arizona\\screens')
+                local browse_thr = DC.effil_start(browse_folder_worker,
+                    browse_channel, u8('пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ arizona\\screens')
                 )
-                active_threads[#active_threads+1] = browse_thr
 
                 local browse_result = wait_for_channel(browse_channel, 120000)
 
                 if not browse_result or not browse_result.ok then
                     screens_path_busy = false
                     if browse_result and browse_result.err == "cancelled" then
-
                     else
-                        screens_path_error = "Не удалось открыть диалог выбора папки. Введите путь вручную."
+                        screens_path_error = "пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ."
                     end
                 else
                     local chosen_path = browse_result.path
@@ -2485,9 +3234,9 @@ local function resolve_screens_root(callback)
 
                     if not is_dir(chosen_path) then
                         screens_path_busy = false
-                        screens_path_error = "Выбранная папка недоступна."
+                        screens_path_error = "пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ."
                     else
-                        screens_path_status = 'Проверяю папку — жду тестовый скриншот (F8)...'
+                        screens_path_status = 'пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ (F8)...'
 
                         local ok = verify_screens_folder(chosen_path)
                         screens_path_busy = false
@@ -2495,44 +3244,43 @@ local function resolve_screens_root(callback)
                         if ok then
                             screens_path_open[0] = false
                             save_cached_screens_root(chosen_path)
-                            es_msg("Папка подтверждена — тестовый скриншот найден!")
+                            es_msg("пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ!")
                             callback(chosen_path)
                             return
                         else
-                            screens_path_error = "Тестовый скриншот не появился в этой папке за отведённое время. Проверьте путь и попробуйте снова."
+                            screens_path_error = "пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ."
                         end
                     end
                 end
             else
                 screens_path_busy   = true
-                screens_path_status = 'Идёт автопоиск, подождите...'
+                screens_path_status = 'пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ, пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ...'
 
                 local found = find_screens_folder_everywhere()
 
                 if not found then
-                    screens_path_status = 'Не нашёл папку напрямую — жду сообщение о сохранении скриншота в чате (F8)...'
+                    screens_path_status = 'пїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅ (F8)...'
                     found = find_screens_folder_via_chatlog()
                 end
 
                 if found then
 
-                    screens_path_status = 'Нашёл! Проверяю папку — жду тестовый скриншот (F8)...'
+                    screens_path_status = 'пїЅпїЅпїЅпїЅпїЅ! пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ (F8)...'
                     local ok = verify_screens_folder(found)
                     screens_path_busy = false
 
                     if ok then
                         screens_path_open[0] = false
                         save_cached_screens_root(found)
-                        es_msg("Нашёл и подтвердил тестовым скриншотом! Запомню, чтобы не искать заново!")
+                        es_msg("пїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ! пїЅпїЅпїЅпїЅпїЅпїЅпїЅ, пїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ!")
                         callback(found)
                         return
                     else
-                        screens_path_error = "Папка найдена автопоиском, но тестовый скриншот в ней не появился. Укажите путь вручную."
+                        screens_path_error = "пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ, пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ."
                     end
                 else
                     screens_path_busy = false
-                    screens_path_error = "Не найдено автоматически (включая поиск через чат-лог). Укажите путь вручную."
-
+                    screens_path_error = "пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ (пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ-пїЅпїЅпїЅ). пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ."
                 end
             end
         end
@@ -2542,7 +3290,7 @@ end
 find_latest_screenshot_in = function(root_folder)
     local latest_subfolder = nil
     local max_folder_time = 0
-    for file_name in lfs.dir(root_folder) do
+    for file_name in DC.dir_iter(root_folder) do
         if file_name ~= "." and file_name ~= ".." then
             local full_sub_path = root_folder .. "\\" .. file_name
             if is_dir(full_sub_path) then
@@ -2558,7 +3306,7 @@ find_latest_screenshot_in = function(root_folder)
 
     local target_file = nil
     local max_file_time = 0
-    for file_name in lfs.dir(latest_subfolder) do
+    for file_name in DC.dir_iter(latest_subfolder) do
         if file_name:find("%.jpg$") or file_name:find("%.png$") or file_name:find("%.jpeg$") then
             local full_file_path = latest_subfolder .. "\\" .. file_name
             local attr = lfs.attributes(full_file_path)
@@ -2636,7 +3384,7 @@ local SCREENSHOT_MAX_WAIT      = 4000
 local function capture_and_upload_screenshot(callback)
 
     if not screens_root_folder then
-        show_toast(u8("Папка не настроена"), "FFAA00")
+        show_toast(u8("пїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ"), "FFAA00")
         return callback(nil)
     end
     if not get_hwid() then
@@ -2645,7 +3393,7 @@ local function capture_and_upload_screenshot(callback)
     end
     local root_folder = screens_root_folder
 
-    lua_thread.create(function()
+    DC.spawn(function()
         local _, baseline_err, baseline_time = find_latest_screenshot_in(root_folder)
         baseline_time = baseline_time or 0
 
@@ -2691,7 +3439,7 @@ local function capture_and_upload_screenshot(callback)
         end
 
         if not target_file then
-            show_toast(u8("Ошибка!"), "FF4444")
+            show_toast(u8("пїЅпїЅпїЅпїЅпїЅпїЅ!"), "FF4444")
             wait(2000)
             hide_toast()
             return callback(nil)
@@ -2706,7 +3454,7 @@ local function capture_and_upload_screenshot(callback)
             wait(150)
         end
         if not file then
-            show_toast(u8("Ошибка!"), "FF4444")
+            show_toast(u8("пїЅпїЅпїЅпїЅпїЅпїЅ!"), "FF4444")
             wait(2000)
             hide_toast()
             return callback(nil)
@@ -2714,14 +3462,14 @@ local function capture_and_upload_screenshot(callback)
         local binary_data = file:read("*a")
         file:close()
 
-        show_toast(u8("Сканирую..."), GREEN_BRIGHT)
+        show_toast(u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ..."), GREEN_BRIGHT)
 
         local hwid_value = get_hwid()
         local result = try_worker_urls(screenshot_upload_worker, function(url)
             return { WORKER_TOKEN, binary_data, hwid_value }
         end, 20000)
         if result and result.ok then
-            show_toast(u8("Готово!"), GREEN_BRIGHT)
+            show_toast(u8("пїЅпїЅпїЅпїЅпїЅпїЅ!"), GREEN_BRIGHT)
             wait(2000)
             hide_toast()
             callback(result.url)
@@ -2733,7 +3481,7 @@ local function capture_and_upload_screenshot(callback)
                 wait(2000)
                 hide_toast()
             else
-                show_toast(u8("Ошибка!"), "FF4444")
+                show_toast(u8("пїЅпїЅпїЅпїЅпїЅпїЅ!"), "FF4444")
                 wait(2000)
                 hide_toast()
             end
@@ -2745,35 +3493,35 @@ end
 local function send_report_to_d1(payload_json, on_done)
     local hwid = get_hwid()
     if not hwid then
-        es_msg("HWID ещё определяется в фоне — попробуй отправить отчёт через пару секунд.", "FFAA00")
+        es_msg("HWID пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ.", "FFAA00")
         if on_done then on_done(false) end
         return
     end
 
-    show_ess_toast(u8("Отправка..."), GREEN_BRIGHT)
+    show_ess_toast(u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ..."), GREEN_BRIGHT)
 
-    lua_thread.create(function()
+    DC.spawn(function()
         local result = try_worker_urls(d1_report_worker, function(url)
             return { WORKER_TOKEN, payload_json, hwid }
         end, 20000)
         if result and result.ok then
-            show_ess_toast(u8("Готово!"), GREEN_BRIGHT)
+            show_ess_toast(u8("пїЅпїЅпїЅпїЅпїЅпїЅ!"), GREEN_BRIGHT)
             wait(2000)
             hide_ess_toast()
-            es_msg("Отчёт успешно сохранён в базу данных!")
+            es_msg("пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ!")
             if on_done then on_done(true) end
         else
             local err = result and result.err or "timeout"
             if is_hwid_error(err) then
-                show_ess_toast(u8("Ошибка HWID!"), "FF4444")
+                show_ess_toast(u8("пїЅпїЅпїЅпїЅпїЅпїЅ HWID!"), "FF4444")
                 wait(2000)
                 hide_ess_toast()
                 notify_hwid_denied()
             else
-                show_ess_toast(u8("Ошибка!"), "FF4444")
+                show_ess_toast(u8("пїЅпїЅпїЅпїЅпїЅпїЅ!"), "FF4444")
                 wait(2000)
                 hide_ess_toast()
-                es_msg("Ошибка сохранения отчёта: " .. tostring(err), "FF4444")
+                es_msg("пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ: " .. tostring(err), "FF4444")
             end
             if on_done then on_done(false) end
         end
@@ -2781,7 +3529,7 @@ local function send_report_to_d1(payload_json, on_done)
 end
 
 local function fetch_last_report_from_d1(on_done)
-    lua_thread.create(function()
+    DC.spawn(function()
         local result = try_worker_urls(d1_last_report_worker, function(url)
             return { WORKER_TOKEN }
         end, 15000)
@@ -2797,18 +3545,17 @@ local function download_and_install_update()
     if update_in_progress then return end
     update_in_progress = true
 
-    es_msg("Скачиваю обновление...")
+    es_msg("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ...")
 
-    lua_thread.create(function()
+    DC.spawn(function()
         local channel = effil.channel()
-        local thr = effil.thread(update_download_worker)(channel, UPDATE_DOWNLOAD_URL)
-        active_threads[#active_threads+1] = thr
+        local thr = DC.effil_start(update_download_worker, channel, UPDATE_DOWNLOAD_URL)
 
-        local result = wait_for_channel(channel, 30000)
+        local result = wait_for_channel(channel, 30000, thr)
         update_in_progress = false
 
         if not result or not result.ok or not result.data then
-            es_msg("Не удалось скачать обновление: " .. tostring(result and result.err or "timeout"), "FF4444")
+            es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: " .. tostring(result and result.err or "timeout"), "FF4444")
             return
         end
 
@@ -2817,7 +3564,7 @@ local function download_and_install_update()
 
         local file = io.open(tmp_path, "wb")
         if not file then
-            es_msg("Не удалось создать временный файл для обновления!", "FF4444")
+            es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ!", "FF4444")
             return
         end
         file:write(result.data)
@@ -2828,41 +3575,237 @@ local function download_and_install_update()
         local renamed_old = os.rename(script_path, old_path)
         if not renamed_old then
             os.remove(tmp_path)
-            es_msg("Не удалось заменить файл скрипта (возможно, он занят). Обновление отменено.", "FF4444")
+            es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ (пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ, пїЅпїЅ пїЅпїЅпїЅпїЅпїЅ). пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ.", "FF4444")
             return
         end
 
         local renamed_new = os.rename(tmp_path, script_path)
         if not renamed_new then
             os.rename(old_path, script_path)
-            es_msg("Не удалось завершить замену файла скрипта. Обновление отменено.", "FF4444")
+            es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ.", "FF4444")
             return
         end
 
         update_available = false
-        es_msg("Обновление успешно установлено! Перезапустите скрипт (перезагрузите MoonLoader или игру), чтобы применить его.")
+        es_msg("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ! пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ (пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ MoonLoader пїЅпїЅпїЅ пїЅпїЅпїЅпїЅ), пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ.")
     end)
 end
 
 local function check_for_update()
-    lua_thread.create(function()
+    DC.spawn(function()
         local channel = effil.channel()
-        local thr = effil.thread(version_check_worker)(channel, VERSION_CHECK_URL)
-        active_threads[#active_threads+1] = thr
+        local thr = DC.effil_start(version_check_worker, channel, VERSION_CHECK_URL)
 
-        local result = wait_for_channel(channel, 15000)
+        local result = wait_for_channel(channel, 15000, thr)
         if result and result.ok and result.version then
             if result.version ~= SCRIPT_VERSION then
                 update_available      = true
                 update_remote_version = result.version
                 es_msg(string.format(
-                    "Доступно обновление ({FFFF00}%s{FFFFFF} -> {FFFF00}%s{FFFFFF}). Начинаю автоматическую установку...",
+                    "пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ ({FFFF00}%s{FFFFFF} -> {FFFF00}%s{FFFFFF}). пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ...",
                     SCRIPT_VERSION, result.version
                 ), "FFFFFF")
                 download_and_install_update()
             end
         end
     end)
+end
+
+DC.win_open = imgui_new.bool(false)
+
+function DC.url_encode(s)
+    return (tostring(s):gsub("[^%w%-%._~]", function(c)
+        return string.format("%%%02X", c:byte())
+    end))
+end
+
+function DC.open_browser()
+    local hwid = get_hwid()
+    if not hwid then
+        es_msg("HWID пїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ.", "FFAA00")
+        return
+    end
+
+    DC.spawn(function()
+        local gen_result = try_worker_urls(gen_token_worker, function(url)
+            return { WORKER_TOKEN, hwid, "discord" }
+        end, 15000)
+
+        if not gen_result or not gen_result.ok or not gen_result.token then
+            local err = gen_result and gen_result.err or "timeout"
+            if is_hwid_error(err) then
+                notify_hwid_denied()
+            else
+                es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: " .. tostring(err), "FF4444")
+            end
+            return
+        end
+
+        local base = WORKER_URL_PRIMARY:gsub("/+$", "")
+        local url = base .. "/discord-auth?token=" .. DC.url_encode(gen_result.token)
+
+        local channel = effil.channel()
+        local thr = DC.effil_start(open_url_worker, channel, url)
+
+        local result = wait_for_channel(channel, 5000, thr)
+        if not (result and result.ok) then
+            copy_to_clipboard(url)
+            es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ.", "FF4444")
+        else
+            es_msg("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ Discord пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ...")
+        end
+    end)
+end
+
+function DC.fetch_status()
+    local hwid = get_hwid()
+    if not hwid then return nil end
+    return try_worker_urls(check_hwid_worker, function(url)
+        return { hwid }
+    end, 15000)
+end
+
+function DC.start_polling()
+    if DC.polling then return end
+    DC.polling = true
+
+    DC.spawn(function()
+        local waited = 0
+        while DC.win_open[0] and waited < 600000 do
+            wait(5000)
+            waited = waited + 5000
+            if not DC.win_open[0] then break end
+
+            local r = DC.fetch_status()
+            if r and r.ok and r.allowed and r.discord_linked then
+                DC.linked = true
+                DC.win_open[0] = false
+                es_msg("Discord пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ! пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ.")
+
+                espl_author_resolved    = false
+                espl_panel.avatar_tries = 0
+                resolve_espl_author()
+                break
+            end
+        end
+        DC.polling = false
+    end)
+end
+
+function DC.require(fn)
+    if DC.linked then
+        fn()
+        return
+    end
+    if DC.checking or DC.win_open[0] then return end
+
+    if not get_hwid() then
+        es_msg("HWID пїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ.", "FFAA00")
+        return
+    end
+
+    DC.checking = true
+    DC.spawn(function()
+        local r = DC.fetch_status()
+        DC.checking = false
+
+        if not (r and r.ok) then
+            es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: " .. tostring(r and r.err or "timeout"), "FF4444")
+            return
+        end
+        if not r.allowed then
+            notify_hwid_denied()
+            return
+        end
+        if r.discord_linked then
+            DC.linked = true
+            fn()
+            return
+        end
+
+        DC.win_open[0] = true
+        DC.start_polling()
+    end)
+end
+
+sampRegisterChatCommand = function(name, handler)
+    DC.raw_register(name, function(params)
+        DC.require(function() handler(params) end)
+    end)
+end
+
+imgui.OnFrame(function() return DC.win_open[0] end, function()
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(18, 16))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.055, 0.075, 0.055, 0.98))
+    imgui.PushStyleColor(imgui.Col.Border, hexcol(GREEN_MID))
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
+    imgui.PushStyleColor(imgui.Col.Button, hexcol(GREEN_DARK))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, hexcol(GREEN_MID))
+    imgui.PushStyleColor(imgui.Col.ButtonActive, hexcol(GREEN_BRIGHT))
+
+    local io = imgui.GetIO()
+    imgui.SetNextWindowPos(
+        imgui.ImVec2(io.DisplaySize.x / 2, io.DisplaySize.y / 2),
+        imgui.Cond.Always, imgui.ImVec2(0.5, 0.5)
+    )
+    imgui.SetNextWindowFocus()
+
+    imgui.Begin('##discord_auth_window', nil,
+        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize +
+        imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoTitleBar +
+        imgui.WindowFlags.AlwaysAutoResize)
+
+    local W = 320
+
+    center_text(u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ"), hexcol(GREEN_BRIGHT))
+    imgui.Spacing()
+    imgui.PushTextWrapPos(imgui.GetCursorPosX() + W)
+    imgui.TextWrapped(u8("пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ EventScan, пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ Discord-пїЅпїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ, пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ."))
+    imgui.PopTextWrapPos()
+    imgui.Spacing()
+
+    if imgui.Button(u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ Discord"), imgui.ImVec2(W, 34)) then
+        DC.open_browser()
+    end
+
+    if DC.polling then
+        center_text(u8("пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ..."), imgui.ImVec4(0.65, 0.75, 0.65, 1))
+    end
+
+    if imgui.Button(u8("пїЅпїЅпїЅпїЅпїЅпїЅпїЅ"), imgui.ImVec2(W, 28)) then
+        DC.win_open[0] = false
+    end
+
+    imgui.End()
+
+    imgui.PopStyleColor(6)
+    imgui.PopStyleVar(4)
+end)
+
+function parse_iso8601_utc(str)
+    if type(str) ~= "string" then return nil end
+    local y, m, d, h, mi, sec = str:match("^(%d+)-(%d+)-(%d+)[T ](%d+):(%d+):(%d+)")
+    if not y then return nil end
+    return {
+        year = tonumber(y), month = tonumber(m), day = tonumber(d),
+        hour = tonumber(h), min = tonumber(mi), sec = tonumber(sec)
+    }
+end
+
+function utc_table_to_local_epoch(t)
+    if not t then return nil end
+    return espl_days_from_civil(t.year, t.month, t.day) * 86400
+        + t.hour * 3600 + t.min * 60 + t.sec
+end
+
+function onScriptTerminate(scr, quit_game)
+    if scr == thisScript() then
+        scanning_active = false
+        DC.cancel_all()
+    end
 end
 
 function main()
@@ -2876,13 +3819,13 @@ function main()
     resolve_espl_author()
     check_for_update()
 
-    es_msg("{FFFF00}/es {FFFFFF}(добавить скан), {FFFF00}")
-    es_msg("{FFFF00}/ess Название Ник_Победителя {FFFFFF}(Отправить отчет)")
-    es_msg("{FFFF00}/eslast {FFFFFF}(время с последнего отчёта)")
-    es_msg("{FFFF00}/esr {FFFFFF}(открыть CRM-дашборд твоих отчётов)")
-    es_msg("{FFFF00}/esp {FFFFFF}(открыть планировщик событий в игре)")
-    es_msg("{FFFF00}/esreset {FFFFFF}(сбросить кеш папки скриншотов)")
-    
+    es_msg("{FFFF00}/es {FFFFFF}(пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ), {FFFF00}")
+    es_msg("{FFFF00}/ess пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ_пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ {FFFFFF}(пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ)")
+    es_msg("{FFFF00}/eslast {FFFFFF}(пїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ)")
+    es_msg("{FFFF00}/esr {FFFFFF}(пїЅпїЅпїЅпїЅпїЅпїЅпїЅ CRM-пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ)")
+    es_msg("{FFFF00}/esp {FFFFFF}(пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅ)")
+    es_msg("{FFFF00}/esreset {FFFFFF}(пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ)")
+
     sampRegisterChatCommand("es", function()
         start_detection_loop()
 
@@ -2892,7 +3835,7 @@ function main()
             end
 
             local lines = {
-                string.format("--- Скан #%d | %s ---", #pending_reports + 1, get_readable_time()),
+                string.format("--- пїЅпїЅпїЅпїЅ #%d | %s ---", #pending_reports + 1, get_readable_time()),
                 "Screenshot: " .. screen_url
             }
 
@@ -2907,7 +3850,7 @@ function main()
 
     sampRegisterChatCommand("ess", function(params)
         if #pending_reports == 0 then
-            es_msg("Очередь пуста, нечего отправлять. Сначала используйте {FFFF00}/es", "FFAA00")
+            es_msg("пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ, пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ {FFFF00}/es", "FFAA00")
             return
         end
 
@@ -2919,20 +3862,20 @@ function main()
         end
 
         if #words < 2 then
-            es_msg("Использование: {FFFF00}/ess Название события Ник_Победителя {FFFFFF}(пример: {FFFF00}/ess русская рулетка Nehto_Otto{FFFFFF})", "FF4444")
+            es_msg("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: {FFFF00}/ess пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ_пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ {FFFFFF}(пїЅпїЅпїЅпїЅпїЅпїЅ: {FFFF00}/ess пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ Nehto_Otto{FFFFFF})", "FF4444")
             return
         end
 
         local winner_nick = words[#words]
         if not winner_nick:find("_") then
-            es_msg("Ник победителя должен быть последним словом и содержать нижнее подчёркивание (например: Nehto_Otto)", "FF4444")
+            es_msg("пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ (пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: Nehto_Otto)", "FF4444")
             return
         end
 
         table.remove(words, #words)
         local event_name = table.concat(words, " ")
         if event_name == "" then
-            es_msg("Укажите название события перед ником победителя", "FF4444")
+            es_msg("пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ", "FF4444")
             return
         end
 
@@ -2943,7 +3886,7 @@ function main()
 
         local author_nick = get_local_nickname()
 
-        es_msg(string.format("Отправка итогового отчёта (%d сканов, %d игроков) в базу... {FFFF00}Событие: %s | Победитель: %s | Автор: %s", #pending_reports, #players_snapshot, event_name, winner_nick, author_nick))
+        es_msg(string.format("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ (%d пїЅпїЅпїЅпїЅпїЅпїЅ, %d пїЅпїЅпїЅпїЅпїЅпїЅпїЅ) пїЅ пїЅпїЅпїЅпїЅ... {FFFF00}пїЅпїЅпїЅпїЅпїЅпїЅпїЅ: %s | пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: %s | пїЅпїЅпїЅпїЅпїЅ: %s", #pending_reports, #players_snapshot, event_name, winner_nick, author_nick))
 
         local scans_snapshot = pending_scans
         pending_scans = {}
@@ -3000,19 +3943,19 @@ function main()
     sampRegisterChatCommand("eslast", function()
         fetch_last_report_from_d1(function(date_str, err)
             if not date_str then
-                es_msg("Не удалось получить данные из базы: " .. tostring(err), "FF4444")
+                es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅ: " .. tostring(err), "FF4444")
                 return
             end
 
             local utc_tbl = parse_iso8601_utc(date_str)
             if not utc_tbl then
-                es_msg("Не удалось разобрать дату последнего отчёта", "FF4444")
+                es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ", "FF4444")
                 return
             end
 
             local last_epoch = utc_table_to_local_epoch(utc_tbl)
             if not last_epoch then
-                es_msg("Ошибка расчёта времени", "FF4444")
+                es_msg("пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ", "FF4444")
                 return
             end
 
@@ -3023,9 +3966,9 @@ function main()
             local seconds = diff % 60
 
             if minutes < 1 then
-                es_msg(string.format("С последнего отчёта прошло: %d сек.", seconds))
+                es_msg(string.format("пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ: %d пїЅпїЅпїЅ.", seconds))
             else
-                es_msg(string.format("С последнего отчёта прошло: %d мин %d сек.", minutes, seconds))
+                es_msg(string.format("пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ: %d пїЅпїЅпїЅ %d пїЅпїЅпїЅ.", minutes, seconds))
             end
         end)
     end)
@@ -3033,25 +3976,20 @@ function main()
     sampRegisterChatCommand("esr", function()
         local hwid = get_hwid()
         if not hwid then
-            es_msg("HWID ещё не определён. Попробуй через пару секунд.", "FFAA00")
+            es_msg("HWID пїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ.", "FFAA00")
             return
         end
 
         local nick = get_local_nickname()
         if not nick or nick == "Unknown" then
-            es_msg("Не удалось определить твой ник. Попробуй ещё раз.", "FF4444")
+            es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅ.", "FF4444")
             return
         end
 
-        lua_thread.create(function()
-            -- Вместо того, чтобы класть голый HWID прямо в URL (он бы
-            -- фактически стал вечным ключом, если ссылка где-то
-            -- засветится — в истории браузера, логах и т.п.), сначала
-            -- просим воркер выдать одноразовый токен, который истекает
-            -- максимум через минуту и гасится сразу после первого же
-            -- использования сайтом.
+        DC.spawn(function()
+
             local gen_result = try_worker_urls(gen_token_worker, function(url)
-                return { WORKER_TOKEN, hwid }
+                return { WORKER_TOKEN, hwid, "esr" }
             end, 15000)
 
             if not gen_result or not gen_result.ok or not gen_result.token then
@@ -3059,49 +3997,42 @@ function main()
                 if is_hwid_error(err) then
                     notify_hwid_denied()
                 else
-                    es_msg("Не удалось сгенерировать ссылку для входа: " .. tostring(err), "FF4444")
+                    es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ: " .. tostring(err), "FF4444")
                 end
                 return
             end
 
-            -- Используем & вместо ? для параметров внутри hash
             local url = "https://saportbati.github.io/eventCRM/author.html#/author/" .. nick .. "&token=" .. gen_result.token
 
             local channel = effil.channel()
-            local thr = effil.thread(open_url_worker)(channel, url)
-            active_threads[#active_threads+1] = thr
+            local thr = DC.effil_start(open_url_worker, channel, url)
 
-            local result = wait_for_channel(channel, 5000)
+            local result = wait_for_channel(channel, 5000, thr)
             if result and result.ok then
-                es_msg("Открываю твой профиль в CRM ({FFFF00}" .. nick .. "{FFFFFF})...")
+                es_msg("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ CRM ({FFFF00}" .. nick .. "{FFFFFF})...")
             else
-                es_msg("Не удалось открыть браузер (" .. tostring(result and result.err or "timeout") .. ").", "FF4444")
-                es_msg("Ссылка для ручного открытия (действует не дольше 1 минуты): {FFFF00}" .. url)
+                es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ (" .. tostring(result and result.err or "timeout") .. ").", "FF4444")
+                es_msg("пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ (пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ 1 пїЅпїЅпїЅпїЅпїЅпїЅ): {FFFF00}" .. url)
             end
         end)
     end)
 
-    -- Секретная версия /esr: тот же одноразовый токен (гасится за 1
-    -- использование и живёт не дольше минуты), но вместо открытия
-    -- браузера ссылка просто копируется в буфер обмена — удобно, если
-    -- нужно вставить её куда-то самому (другой браузер, устройство и т.п.),
-    -- не запуская локальный.
     sampRegisterChatCommand("-esr", function()
         local hwid = get_hwid()
         if not hwid then
-            es_msg("HWID ещё не определён. Попробуй через пару секунд.", "FFAA00")
+            es_msg("HWID пїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ.", "FFAA00")
             return
         end
 
         local nick = get_local_nickname()
         if not nick or nick == "Unknown" then
-            es_msg("Не удалось определить твой ник. Попробуй ещё раз.", "FF4444")
+            es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅ.", "FF4444")
             return
         end
 
-        lua_thread.create(function()
+        DC.spawn(function()
             local gen_result = try_worker_urls(gen_token_worker, function(url)
-                return { WORKER_TOKEN, hwid }
+                return { WORKER_TOKEN, hwid, "esr" }
             end, 15000)
 
             if not gen_result or not gen_result.ok or not gen_result.token then
@@ -3109,7 +4040,7 @@ function main()
                 if is_hwid_error(err) then
                     notify_hwid_denied()
                 else
-                    es_msg("Не удалось сгенерировать ссылку для входа: " .. tostring(err), "FF4444")
+                    es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ: " .. tostring(err), "FF4444")
                 end
                 return
             end
@@ -3117,25 +4048,24 @@ function main()
             local url = "https://saportbati.github.io/eventCRM/author.html#/author/" .. nick .. "&token=" .. gen_result.token
 
             if copy_to_clipboard(url) then
-                es_msg("Ссылка для входа скопирована в буфер обмена (действует не дольше 1 минуты, {FFFF00}" .. nick .. "{FFFFFF}).")
+                es_msg("пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ (пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ 1 пїЅпїЅпїЅпїЅпїЅпїЅ, {FFFF00}" .. nick .. "{FFFFFF}).")
             else
-                es_msg("Не удалось скопировать в буфер обмена. Ссылка (действует не дольше 1 минуты): {FFFF00}" .. url, "FF4444")
+                es_msg("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅ (пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ 1 пїЅпїЅпїЅпїЅпїЅпїЅ): {FFFF00}" .. url, "FF4444")
             end
         end)
     end)
 
-    -- Открывает планировщик прямо в игре (то же окно, что раньше открывалось
-    -- командой /espl — теперь она объединена с /esp).
     sampRegisterChatCommand("esp", function()
         if espl_open[0] then
             espl_open[0]    = false
             espl_modal_open = false
+            DC.esp_stop_polling()
             return
         end
 
         local hwid = get_hwid()
         if not hwid then
-            es_msg("HWID ещё не определён. Попробуй через пару секунд.", "FFAA00")
+            es_msg("HWID пїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ.", "FFAA00")
             return
         end
 
@@ -3144,17 +4074,18 @@ function main()
         espl_dates         = espl_get_date_range()
         espl_selected_date = format_date_ymd(os.time() + MSK_OFFSET)
         espl_schedule       = {}
+        espl_top3            = {}
         espl_loading        = true
         espl_load_error      = ""
         espl_open[0]        = true
 
-        espl_load_schedule(espl_selected_date, espl_apply_schedule_result)
+        DC.esp_start_polling(espl_selected_date)
     end)
 
     sampRegisterChatCommand("esreset", function()
         os.remove(SCREENS_CACHE_FILE)
         screens_root_folder = nil
-        es_msg("Кеш папки со скриншотами сброшен. Открываю окно для повторной настройки...")
+        es_msg("пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ...")
         resolve_screens_root(function(path)
             screens_root_folder = path
         end)
