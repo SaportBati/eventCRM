@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Отправить отчёт · Arizona Event CRM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<style>
+  .report-wrap{ max-width: 860px; margin: 0 auto; padding: 10px 0 40px; }
+  .report-title{ font-family:'Cinzel',serif; font-size:clamp(24px,3.4vw,34px); color: var(--teal-bright); text-align:center; margin: 18px 0 6px; letter-spacing:1px; }
+  .report-sub{ text-align:center; color: var(--text-dim); font-size:13px; margin-bottom: 26px; }
+  .form-card{ padding: 28px; display:flex; flex-direction:column; gap:20px; }
+  .form-card:hover{ transform:none; }
+  .field label{ display:block; font-size:11px; text-transform:uppercase; letter-spacing:1px; color: var(--text-dim); margin-bottom:8px; }
+  .field label .hint{ text-transform:none; letter-spacing:0; color: var(--text-faint); margin-left:6px; }
+  .field input[type=text], .field input[type=datetime-local], .field textarea{
+    width:100%; background: rgba(255,255,255,.03); border:1px solid var(--border); color: var(--text);
+    padding: 12px 15px; border-radius: 14px; font-family:'Inter',sans-serif; font-size:14px; outline:none;
+    transition: border-color .2s, box-shadow .2s; color-scheme: dark;
+  }
+  .field textarea{ min-height: 110px; resize: vertical; font-family:'JetBrains Mono',monospace; font-size:13px; line-height:1.6; }
+  .field input:focus, .field textarea:focus{ border-color: var(--teal); box-shadow: var(--glow-teal); }
+  .field input[readonly]{ color: var(--gold-bright); cursor:default; border-style:dashed; }
+  .row-2{ display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+  @media (max-width:640px){ .row-2{ grid-template-columns:1fr; } .form-card{ padding:20px; } .field input, .field textarea{ font-size:16px; } }
+  .count-line{ font-size:11.5px; color: var(--text-faint); margin-top:6px; font-family:'JetBrains Mono',monospace; }
+
+  .dropzone{
+    border: 2px dashed var(--border); border-radius: var(--radius); padding: 34px 20px; text-align:center;
+    color: var(--text-dim); cursor:pointer; transition: all .2s var(--ease-out); background: rgba(255,255,255,.02);
+  }
+  .dropzone:hover, .dropzone.drag{ border-color: var(--teal); background: rgba(79,195,176,.08); color: var(--text); box-shadow: var(--glow-teal); }
+  .dropzone .dz-icon{ font-size:30px; margin-bottom:8px; }
+  .dropzone .dz-main{ font-size:14px; font-weight:600; }
+  .dropzone .dz-sub{ font-size:12px; color: var(--text-faint); margin-top:5px; }
+
+  .thumbs{ display:grid; grid-template-columns: repeat(auto-fill, minmax(120px,1fr)); gap:10px; margin-top:14px; }
+  .thumb{ position:relative; aspect-ratio:1/1; border-radius:12px; overflow:hidden; border:1px solid var(--border); background: var(--panel-2); }
+  .thumb img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .thumb .t-remove{
+    position:absolute; top:6px; right:6px; width:22px; height:22px; border-radius:50%; border:none; cursor:pointer;
+    background: rgba(6,7,9,.7); color: var(--text); font-size:12px; display:flex; align-items:center; justify-content:center;
+  }
+  .thumb .t-remove:hover{ background: var(--crimson); }
+  .thumb .t-status{
+    position:absolute; left:0; right:0; bottom:0; padding:4px 7px; font-size:10.5px; font-family:'JetBrains Mono',monospace;
+    background: linear-gradient(0deg, rgba(0,0,0,.85), transparent); color: var(--text-dim);
+  }
+  .thumb.uploading{ border-color: var(--gold); }
+  .thumb.uploading .t-status{ color: var(--gold-bright); }
+  .thumb.done{ border-color: var(--teal); }
+  .thumb.done .t-status{ color: var(--teal-bright); }
+  .thumb.error{ border-color: var(--crimson); }
+  .thumb.error .t-status{ color: var(--crimson-bright); }
+
+  .actions{ display:flex; gap:12px; align-items:center; justify-content:flex-end; flex-wrap:wrap; }
+  .actions .msg{ flex:1; font-size:13px; min-width:200px; }
+  .msg.ok{ color: var(--teal-bright); } .msg.err{ color: var(--crimson-bright); } .msg.info{ color: var(--text-dim); }
+  button.btn.big{ padding: 12px 26px; font-size:14px; }
+</style>
+</head>
+<body>
+
+<div class="hero-bg hero-bg-blurred" id="heroBg" aria-hidden="true"></div>
+<div class="aurora" aria-hidden="true"><span class="b1"></span><span class="b2"></span><span class="b3"></span></div>
+
+<header>
+  <div class="brand">
+    <div class="brand-copy">
+      <h1 id="brandTitle">Arizona Event CRM</h1>
+      <div class="subtitle" id="brandSub">Ручная отправка отчёта</div>
+    </div>
+  </div>
+  <div class="nav-tabs-wrap">
+    <nav class="nav-tabs">
+      <a href="index.html">Дашборд</a>
+      <a href="author.html">Авторы</a>
+    </nav>
+    <nav class="nav-tabs nav-tabs-secondary">
+      <a href="plan.html">Планировщик</a>
+      <a href="report.html" class="active">Отчёт</a>
+    </nav>
+  </div>
+</header>
+
+<main style="opacity:1; transform:none;">
+  <div class="loading" id="loadingState"><div class="spinner"></div>Проверяем авторизацию…</div>
+
+  <div id="app" style="display:none;">
+    <div class="report-wrap">
+      <h2 class="report-title">Отправить отчёт</h2>
+      <div class="report-sub">То же, что команда /ess в игре, только вручную</div>
+
+      <div class="glass form-card">
+        <div class="row-2">
+          <div class="field">
+            <label>Автор <span class="hint">определяется автоматически</span></label>
+            <input type="text" id="fAuthor" readonly>
+          </div>
+          <div class="field">
+            <label>Дата и время <span class="hint">МСК</span></label>
+            <input type="datetime-local" id="fWhen">
+          </div>
+        </div>
+
+        <div class="row-2">
+          <div class="field">
+            <label>Событие</label>
+            <input type="text" id="fEvent" maxlength="100" placeholder="Например: русская рулетка">
+          </div>
+          <div class="field">
+            <label>Победитель <span class="hint">Nick_Name</span></label>
+            <input type="text" id="fWinner" maxlength="64" placeholder="Nehto_Otto">
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Участники <span class="hint">по одному на строку или через запятую</span></label>
+          <textarea id="fPlayers" placeholder="Player_One&#10;Player_Two"></textarea>
+          <div class="count-line" id="playersCount">Участников: 0</div>
+        </div>
+
+        <div class="field">
+          <label>Сканы (скриншоты)</label>
+          <div class="dropzone" id="dropzone" tabindex="0">
+            <div class="dz-icon">🖼️</div>
+            <div class="dz-main">Перетащи фото сюда или нажми, чтобы выбрать</div>
+            <div class="dz-sub">Можно вставить из буфера (Ctrl+V) · до 32 МБ на файл · до 20 файлов</div>
+          </div>
+          <input type="file" id="fileInput" accept="image/*" multiple style="display:none;">
+          <div class="thumbs" id="thumbs"></div>
+        </div>
+
+        <div class="actions">
+          <div class="msg info" id="msg"></div>
+          <button class="btn ghost" id="btnClear" type="button">Очистить</button>
+          <button class="btn primary big" id="btnSend" type="button">Отправить отчёт</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+(async function(){
+  const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
+  const MAX_FILES = 20;
+  const MAX_BYTES = 32 * 1024 * 1024;
+  const $ = (id) => document.getElementById(id);
+
+  let currentHwid = null;
+  let currentAuthor = null;
+
+  // ============== АВТОРИЗАЦИЯ (одноразовый токен /esr -> HWID) ==============
+  function getTokenFromUrl(){
+    const m = window.location.hash.match(/&token=([^&/#]+)/);
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+  function cleanTokenFromUrl(){
+    const h = window.location.hash;
+    if(h.includes('&token=')){
+      window.history.replaceState(null, '', h.replace(/&token=[^&/#]+/, '') || '#/');
+    }
+  }
+  async function exchangeTokenForHwid(token){
+    try{
+      const r = await fetch(WORKER_URL + '/check-token', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ token })
+      });
+      if(!r.ok) return null;
+      const d = await r.json();
+      return (d && d.ok && d.hwid) ? d.hwid : null;
+    }catch(e){ return null; }
+  }
+  async function checkHwidServer(hwid){
+    try{
+      const r = await fetch(WORKER_URL + '/check-hwid', { headers:{ 'X-HWID': hwid } });
+      if(!r.ok) return { allowed:false, author:null };
+      const d = await r.json();
+      return { allowed: Boolean(d && d.ok && d.allowed), author: (d && d.author) || null };
+    }catch(e){ return { allowed:false, author:null }; }
+  }
+  async function isAuthorized(){
+    let hwid = null;
+    const tok = getTokenFromUrl();
+    if(tok){
+      hwid = await exchangeTokenForHwid(tok);
+      cleanTokenFromUrl();
+      if(!hwid){ localStorage.removeItem('authorized_hwid'); return false; }
+    } else {
+      hwid = localStorage.getItem('authorized_hwid');
+      if(!hwid) return false;
+    }
+    const res = await checkHwidServer(hwid);
+    if(!res.allowed){ localStorage.removeItem('authorized_hwid'); return false; }
+    localStorage.setItem('authorized_hwid', hwid);
+    currentHwid = hwid;
+    currentAuthor = res.author;
+    return true;
+  }
+  function showAuthRequired(){
+    document.body.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:linear-gradient(135deg,#0a0e14 0%,#1a1f2e 100%);color:#ece7da;font-family:'Inter',sans-serif;text-align:center;padding:20px;">
+        <div style="background:rgba(26,31,46,.8);border:2px solid #4fc3b0;border-radius:16px;padding:40px;max-width:500px;box-shadow:0 8px 32px rgba(79,195,176,.2);">
+          <h1 style="font-family:'Cinzel',serif;font-size:32px;margin-bottom:20px;color:#4fc3b0;">🔒 Требуется авторизация</h1>
+          <p style="font-size:16px;line-height:1.6;color:#c8cdd8;">Для отправки отчётов авторизуйся.<br><br>Используй команду <code style="background:#0a0e14;padding:4px 8px;border-radius:4px;color:#4fc3b0;font-family:'JetBrains Mono',monospace;">/esr</code> в игре.</p>
+        </div>
+      </div>`;
+  }
+
+  if(!(await isAuthorized())){ showAuthRequired(); return; }
+
+  // ============== ИНИЦИАЛИЗАЦИЯ ФОРМЫ ==============
+  $('loadingState').style.display = 'none';
+  $('app').style.display = 'block';
+
+  if(currentAuthor){
+    $('fAuthor').value = currentAuthor;
+  } else {
+    $('fAuthor').value = 'не определён';
+    setMsg('err', 'Для твоего HWID не указан автор — обратись к администратору.');
+    $('btnSend').disabled = true;
+  }
+
+  function mskNowLocalValue(){
+    return new Date(Date.now() + 3*3600*1000).toISOString().slice(0,16);
+  }
+  $('fWhen').value = mskNowLocalValue();
+
+  function setMsg(kind, text){
+    const el = $('msg');
+    el.className = 'msg ' + kind;
+    el.textContent = text || '';
+  }
+
+  // ---------- участники ----------
+  function parsePlayers(){
+    const seen = new Set(), out = [];
+    $('fPlayers').value.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean).forEach(n => {
+      if(!seen.has(n)){ seen.add(n); out.push(n); }
+    });
+    return out;
+  }
+  $('fPlayers').addEventListener('input', () => {
+    $('playersCount').textContent = 'Участников: ' + parsePlayers().length;
+  });
+
+  // ---------- файлы ----------
+  let files = []; // { id, file, preview, status, url, error }
+  let nextId = 1;
+  let busy = false;
+
+  function addFiles(list){
+    let skipped = 0;
+    for(const f of list){
+      if(!f.type || !f.type.startsWith('image/')){ skipped++; continue; }
+      if(f.size > MAX_BYTES){ skipped++; continue; }
+      if(files.length >= MAX_FILES){ skipped++; continue; }
+      files.push({ id: nextId++, file: f, preview: URL.createObjectURL(f), status:'idle', url:null, error:null });
+    }
+    renderThumbs();
+    if(skipped) setMsg('err', `Пропущено файлов: ${skipped} (не картинка, больше 32 МБ или лимит ${MAX_FILES}).`);
+  }
+
+  function renderThumbs(){
+    $('thumbs').innerHTML = files.map(f => {
+      const label = f.status === 'idle' ? 'в очереди'
+        : f.status === 'uploading' ? 'загрузка…'
+        : f.status === 'done' ? '✔ загружено'
+        : '✖ ' + (f.error || 'ошибка');
+      return `<div class="thumb ${f.status}" data-id="${f.id}">
+        <img src="${f.preview}" alt="Скан">
+        ${busy ? '' : `<button type="button" class="t-remove" data-remove="${f.id}" aria-label="Убрать">✕</button>`}
+        <div class="t-status">${escapeHtml(label)}</div>
+      </div>`;
+    }).join('');
+  }
+
+  $('thumbs').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-remove]');
+    if(!btn || busy) return;
+    const id = Number(btn.dataset.remove);
+    const f = files.find(x => x.id === id);
+    if(f) URL.revokeObjectURL(f.preview);
+    files = files.filter(x => x.id !== id);
+    renderThumbs();
+  });
+
+  const dz = $('dropzone'), fileInput = $('fileInput');
+  dz.addEventListener('click', () => { if(!busy) fileInput.click(); });
+  dz.addEventListener('keydown', (e) => { if((e.key === 'Enter' || e.key === ' ') && !busy){ e.preventDefault(); fileInput.click(); } });
+  fileInput.addEventListener('change', () => { addFiles([...fileInput.files]); fileInput.value = ''; });
+  ['dragenter','dragover'].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add('drag'); }));
+  ['dragleave','drop'].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove('drag'); }));
+  dz.addEventListener('drop', (e) => { if(!busy) addFiles([...(e.dataTransfer.files || [])]); });
+  // не даём браузеру открыть файл, если промахнулись мимо зоны
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', (e) => e.preventDefault());
+  document.addEventListener('paste', (e) => {
+    if(busy) return;
+    const items = [...(e.clipboardData && e.clipboardData.items || [])];
+    const imgs = items.filter(i => i.kind === 'file' && i.type.startsWith('image/')).map(i => i.getAsFile()).filter(Boolean);
+    if(imgs.length){ addFiles(imgs); }
+  });
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function fileToBase64(file){
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(',')[1] || '');
+      r.onerror = () => reject(new Error('read_failed'));
+      r.readAsDataURL(file);
+    });
+  }
+
+  async function uploadOne(f){
+    f.status = 'uploading'; f.error = null; renderThumbs();
+    try{
+      const b64 = await fileToBase64(f.file);
+      const resp = await fetch(WORKER_URL + '/upload-image', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'X-HWID': currentHwid },
+        body: JSON.stringify({ data: b64 })
+      });
+      let data = null;
+      try{ data = await resp.json(); }catch(e){}
+      if(resp.ok && data && data.ok && data.url){
+        f.status = 'done'; f.url = data.url;
+      } else {
+        f.status = 'error';
+        f.error = (data && data.error) || ('http_' + resp.status);
+      }
+    }catch(e){
+      f.status = 'error'; f.error = 'сеть';
+    }
+    renderThumbs();
+    return f.status === 'done';
+  }
+
+  // ---------- отправка ----------
+  function setBusy(v){
+    busy = v;
+    $('btnSend').disabled = v;
+    $('btnClear').disabled = v;
+    renderThumbs();
+  }
+
+  function buildDateTime(){
+    // "YYYY-MM-DDTHH:MM" (МСК) -> { date: "DD.MM.YYYY", time: "DD.MM.YYYY HH:MM:SS", clock: "HH:MM:SS" }
+    const v = $('fWhen').value || mskNowLocalValue();
+    const [d, t] = v.split('T');
+    const [y, m, day] = d.split('-');
+    const date = `${day}.${m}.${y}`;
+    const clock = (t || '00:00').slice(0,5) + ':00';
+    return { date, time: `${date} ${clock}`, clock };
+  }
+
+  async function send(){
+    const eventName = $('fEvent').value.trim();
+    const winner = $('fWinner').value.trim();
+    const players = parsePlayers();
+
+    if(!eventName){ setMsg('err', 'Укажи название события.'); return; }
+    if(!winner){ setMsg('err', 'Укажи ник победителя.'); return; }
+    if(!files.length){ setMsg('err', 'Добавь хотя бы один скан.'); return; }
+    if(!winner.includes('_') && !confirm('В нике победителя нет «_». Всё равно отправить?')) return;
+
+    setBusy(true);
+    try{
+      let done = files.filter(f => f.status === 'done').length;
+      for(const f of files){
+        if(f.status === 'done') continue;
+        setMsg('info', `Загружаю фото… (${done}/${files.length})`);
+        const ok = await uploadOne(f);
+        if(!ok){
+          setMsg('err', 'Не удалось загрузить одно из фото. Удали его или нажми «Отправить» ещё раз — загруженные повторно не отправляются.');
+          return;
+        }
+        done++;
+      }
+
+      setMsg('info', 'Сохраняю отчёт…');
+      const dt = buildDateTime();
+      const payload = {
+        date: dt.date,
+        time: dt.time,
+        event: eventName,
+        winner,
+        author: currentAuthor,
+        players,
+        scans: files.map(f => ({ time: dt.clock, url: f.url }))
+      };
+
+      const resp = await fetch(WORKER_URL + '/report', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'X-HWID': currentHwid },
+        body: JSON.stringify(payload)
+      });
+      let data = null;
+      try{ data = await resp.json(); }catch(e){}
+      if(resp.ok && data && data.ok){
+        setMsg('ok', `Отчёт сохранён (#${data.id}). Фото: ${files.length}, участников: ${players.length}.`);
+        resetForm(true);
+      } else {
+        setMsg('err', 'Ошибка сохранения отчёта: ' + ((data && (data.error || data.detail)) || ('http_' + resp.status)));
+      }
+    }catch(e){
+      setMsg('err', 'Не удалось связаться с сервером. Проверь соединение и попробуй ещё раз.');
+    }finally{
+      setBusy(false);
+    }
+  }
+
+  function resetForm(keepMsg){
+    files.forEach(f => URL.revokeObjectURL(f.preview));
+    files = [];
+    $('fEvent').value = '';
+    $('fWinner').value = '';
+    $('fPlayers').value = '';
+    $('fWhen').value = mskNowLocalValue();
+    $('playersCount').textContent = 'Участников: 0';
+    if(!keepMsg) setMsg('info', '');
+    renderThumbs();
+  }
+
+  $('btnSend').addEventListener('click', send);
+  $('btnClear').addEventListener('click', () => {
+    if((files.length || $('fEvent').value || $('fPlayers').value) && !confirm('Очистить форму?')) return;
+    resetForm(false);
+  });
+})();
+</script>
+</body>
+</html>
