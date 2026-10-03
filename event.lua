@@ -143,7 +143,7 @@ local active_worker_url = WORKER_URL_PRIMARY
 local WORKER_TOKEN = "SET_YOUR_OWN_SECRET_HERE"
 local SCAN_RADIUS  = 200.0
 
-local SCRIPT_VERSION      = "1.6"
+local SCRIPT_VERSION      = "1.7"
 local VERSION_CHECK_URL   = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/version.txt"
 local UPDATE_DOWNLOAD_URL = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/event.lua"
 
@@ -4930,7 +4930,7 @@ function DC.winner_submit()
     if not id_str:match("^%d+$") then
         w.error = u8("Введите ID игрока")
         return
-    end
+    en/ao
     local id = tonumber(id_str)
     if not sampIsPlayerConnected(id) then
         w.error = u8("Игрок с ID " .. id .. " не найден")
@@ -4946,7 +4946,7 @@ function DC.winner_submit()
 
     DC.last_winner = { nick = name, title = title_ansi, sum = sum, time = os.time() }
 
-    local msg = string.format('/b Победителем мероприятия "%s" стал %s и получает %dКК',
+    local msg = string.format('/ao Победителем мероприятия "%s" стал %s и получает %dКК',
         title_ansi, name, sum)
 
     w.open = false
