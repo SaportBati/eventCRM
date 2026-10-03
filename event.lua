@@ -4930,7 +4930,7 @@ function DC.winner_submit()
     if not id_str:match("^%d+$") then
         w.error = u8("¬ведите ID игрока")
         return
-    en/ao
+    end
     local id = tonumber(id_str)
     if not sampIsPlayerConnected(id) then
         w.error = u8("»грок с ID " .. id .. " не найден")
