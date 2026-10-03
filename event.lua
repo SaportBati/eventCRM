@@ -133,6 +133,7 @@ local TAG = "{05ff12}[{05f911}E{04f310}v{04ed0f}e{03e70e}n{03e10d}t{02db0c}S{02d
 
 local function es_msg(text, body_color)
     body_color = body_color or "FFFFFF"
+    if DC and DC.trace then DC.trace("chat message: " .. tostring(text)) end
     sampAddChatMessage((DC and DC.tag or TAG) .. " {" .. body_color .. "}" .. text, (DC and DC.tag_color or 0x05ff12))
 end
 
@@ -143,7 +144,7 @@ local active_worker_url = WORKER_URL_PRIMARY
 local WORKER_TOKEN = "SET_YOUR_OWN_SECRET_HERE"
 local SCAN_RADIUS  = 200.0
 
-local SCRIPT_VERSION      = "1.7"
+local SCRIPT_VERSION      = "1.8"
 local VERSION_CHECK_URL   = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/version.txt"
 local UPDATE_DOWNLOAD_URL = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/event.lua"
 
@@ -176,6 +177,122 @@ DC = {
 
 }
 
+-- ===== Logging (EventScan\logs\log_*.log, keeps the last 10 files) =====
+DC.LOG_DIR   = DATA_DIR .. "logs\\"
+DC.LOG_KEEP  = 10
+DC.LOG_MAX   = 5 * 1024 * 1024
+DC.LOG_FILE  = nil
+DC.log_bytes = 0
+
+function DC.trace(msg)
+    if not DC.LOG_FILE or DC.log_bytes > DC.LOG_MAX then return end
+    pcall(function()
+        local line = string.format("%s [%9.3f] %s\n", os.date("%Y-%m-%d %H:%M:%S"), os.clock(), tostring(msg))
+        local f = io.open(DC.LOG_FILE, "ab")
+        if f then
+            f:write(line)
+            f:close()
+            DC.log_bytes = DC.log_bytes + #line
+            if DC.log_bytes > DC.LOG_MAX then
+                local f2 = io.open(DC.LOG_FILE, "ab")
+                if f2 then f2:write("LOG SIZE LIMIT REACHED, further lines are dropped\n") f2:close() end
+            end
+        end
+    end)
+end
+DC.log = DC.trace
+
+function DC.print(...)
+    local parts = {}
+    for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+    local s = table.concat(parts, "\t")
+    print(s)
+    DC.trace("print: " .. s)
+end
+
+function DC.log_init()
+    pcall(lfs.mkdir, DC.LOG_DIR)
+    os.remove(DATA_DIR .. "trace.log")
+
+    local files = {}
+    local okd, iter, obj = pcall(lfs.dir, DC.LOG_DIR)
+    if okd and iter then
+        for name in iter, obj do
+            if name:match("^log_.+%.log$") then files[#files + 1] = name end
+        end
+    end
+    table.sort(files)
+
+    -- was the previous session closed cleanly?
+    local prev_note
+    if #files > 0 then
+        local f = io.open(DC.LOG_DIR .. files[#files], "rb")
+        if f then
+            local size = f:seek("end") or 0
+            f:seek("set", math.max(size - 8192, 0))
+            local tail = f:read("*a") or ""
+            f:close()
+            if not tail:find("SCRIPT TERMINATE", 1, true) then
+                prev_note = "PREVIOUS SESSION " .. files[#files] .. " HAS NO TERMINATE MARK -> game or script probably crashed"
+            end
+        end
+    end
+
+    -- the new file is the 10th, so at most 9 old ones stay
+    while #files > DC.LOG_KEEP - 1 do
+        os.remove(DC.LOG_DIR .. files[1])
+        table.remove(files, 1)
+    end
+
+    local function exists(path)
+        local f = io.open(path, "rb")
+        if f then f:close() return true end
+        return false
+    end
+    local base = DC.LOG_DIR .. os.date("log_%Y%m%d_%H%M%S")
+    local path = base .. ".log"
+    local n = 1
+    while exists(path) do
+        n = n + 1
+        path = base .. "_" .. n .. ".log"
+    end
+    DC.LOG_FILE = path
+
+    DC.trace("=== EventScan log started ===")
+    DC.trace("script version: " .. tostring(SCRIPT_VERSION))
+    DC.trace("script path: " .. tostring(pcall(function() return thisScript().path end) and thisScript().path or "?"))
+    local okm, mlv = pcall(getMoonloaderVersion)
+    DC.trace("moonloader version: " .. tostring(okm and mlv or "?"))
+    DC.trace("jit: " .. tostring(jit and jit.version or "?") .. " os=" .. tostring(jit and jit.os or "?"))
+    DC.trace(string.format("lua memory: %.0f KB", collectgarbage("count")))
+    DC.trace("log files kept: " .. (#files + 1) .. " (max " .. DC.LOG_KEEP .. ")")
+    if prev_note then DC.trace("WARNING: " .. prev_note) end
+end
+pcall(DC.log_init)
+
+function DC.heartbeat_start()
+    DC.spawn(function()
+        local n = 0
+        while true do
+            wait(5000)
+            n = n + 1
+            local active = DC.tp_timer.visible or (DC.bank and DC.bank.state ~= "idle")
+            if active or n % 6 == 0 then
+                local gs = "?"
+                if type(sampGetGamestate) == "function" then
+                    local ok, v = pcall(sampGetGamestate)
+                    gs = ok and tostring(v) or "err"
+                end
+                DC.trace(string.format(
+                    "heartbeat: mem=%.0fKB lthreads=%d ethreads=%d inflight=%d tp_visible=%s bank=%s scans=%d reports=%d players=%d gamestate=%s",
+                    collectgarbage("count"), #DC.lthreads, #DC.ethreads, DC.inflight,
+                    tostring(DC.tp_timer.visible), tostring(DC.bank and DC.bank.state),
+                    #pending_scans, #pending_reports, #unique_players_order, gs))
+            end
+        end
+    end)
+end
+
 function DC.spawn(fn, ...)
     local list = DC.lthreads
     if #list >= 32 then
@@ -184,7 +301,15 @@ function DC.spawn(fn, ...)
             if ok and dead == true then table.remove(list, i) end
         end
     end
-    local thr = lua_thread.create(fn, ...)
+    local args, nargs = { ... }, select("#", ...)
+    local thr = lua_thread.create(function()
+        local ok, err = xpcall(function() return fn(unpack(args, 1, nargs)) end,
+            function(e) return debug.traceback(tostring(e), 2) end)
+        if not ok then
+            DC.trace("THREAD ERROR: " .. tostring(err))
+            error(err, 0)
+        end
+    end)
     list[#list + 1] = thr
     return thr
 end
@@ -197,7 +322,7 @@ function DC.reap()
             table.remove(list, i)
         elseif status == "completed" or status == "cancelled" or status == "failed" then
             if status == "failed" then
-                print("[EventScan] effil-поток завершился с ошибкой: " .. tostring(err))
+                DC.print("[EventScan] effil-поток завершился с ошибкой: " .. tostring(err))
             end
             table.remove(list, i)
         end
@@ -431,6 +556,7 @@ local function scan_nearby_players_once()
                     if name and not unique_players[name] then
                         unique_players[name] = true
                         table.insert(unique_players_order, name)
+                        DC.trace('new player in radius: ' .. tostring(name) .. ' (total ' .. #unique_players_order .. ')')
                     end
                 end
             end
@@ -440,6 +566,7 @@ end
 
 local function start_detection_loop()
     if scanning_active then return end
+    DC.trace('player detection loop started')
     scanning_active = true
     DC.spawn(function()
         while scanning_active do
@@ -450,6 +577,7 @@ local function start_detection_loop()
 end
 
 local function stop_detection_loop()
+    DC.trace('player detection loop stopped, unique players=' .. tostring(#unique_players_order))
     scanning_active = false
 end
 
@@ -604,7 +732,18 @@ local function notify_hwid_denied()
     es_msg("Он скопирован в буфер обмена — отправь его разработчику, чтобы тебя добавили.", "FF4444")
 end
 
-local function screenshot_upload_worker(channel, worker_url, token, binary_data, hwid)
+local function screenshot_upload_worker(channel, worker_url, token, binary_data, hwid, log_path)
+    local function wlog(m)
+        if not log_path then return end
+        pcall(function()
+            local f = io.open(log_path, "ab")
+            if f then
+                f:write(os.date("%Y-%m-%d %H:%M:%S") .. " [worker:upload] " .. tostring(m) .. "\n")
+                f:close()
+            end
+        end)
+    end
+    wlog("start, bytes=" .. tostring(binary_data and #binary_data))
     local ok_r, requests = pcall(require, "requests")
     if not ok_r or not requests then
         channel:push({ ok = false, err = "no_requests" })
@@ -638,9 +777,13 @@ local function screenshot_upload_worker(channel, worker_url, token, binary_data,
         if ok_b and type(res) == "string" and #res > 0 then b64 = res end
     end
     if not b64 then b64 = encodeBase64(binary_data) end
+    wlog("base64 done, len=" .. #b64 .. " mime=" .. tostring(ok_m))
 
-    local payload = json.encode({ data = b64 })
+    local payload = '{"data":"' .. b64 .. '"}'
+    b64 = nil
+    wlog("payload built, len=" .. #payload)
 
+    wlog("sending request")
     local ok, response = pcall(requests.request, "POST", worker_url .. "/upload-image", {
         headers = {
             ["Content-Type"] = "application/json",
@@ -652,6 +795,7 @@ local function screenshot_upload_worker(channel, worker_url, token, binary_data,
         timeout = 25
     })
 
+    wlog("request returned ok=" .. tostring(ok) .. " status=" .. tostring(ok and response and response.status_code))
     if not ok or not response then
         channel:push({ ok = false, err = "network_fail" })
         return
@@ -1230,16 +1374,19 @@ local function try_worker_urls(worker_fn, build_args, timeout_ms)
             guard = guard + 1
         end
         DC.inflight = DC.inflight + 1
+        local t_start = os.clock()
 
         local result
         local ok_args, args = pcall(build_args, url)
         if not ok_args or type(args) ~= "table" then
             result = { ok = false, err = "thread_start_fail: bad_args" }
         else
+            DC.trace('effil: starting thread, url=' .. tostring(url))
             local channel = effil.channel()
             local ok_start, thr = pcall(function()
                 return DC.effil_start(worker_fn, channel, url, unpack(args))
             end)
+            DC.trace('effil: thread start ok=' .. tostring(ok_start))
             if ok_start then
                 result = wait_for_channel(channel, attempt_timeout_ms, thr)
                 if result == nil then pcall(function() thr:cancel(0) end) end
@@ -1249,6 +1396,12 @@ local function try_worker_urls(worker_fn, build_args, timeout_ms)
         end
 
         DC.inflight = math.max(DC.inflight - 1, 0)
+        do
+            local line = "?"
+            pcall(function() line = tostring(debug.getinfo(worker_fn, "S").linedefined) end)
+            DC.trace(string.format("worker@%s url=%s ok=%s err=%s time=%.2fs",
+                line, tostring(url), tostring(result and result.ok), tostring(result and result.err), os.clock() - t_start))
+        end
         return result
     end
 
@@ -1268,18 +1421,18 @@ local function try_worker_urls(worker_fn, build_args, timeout_ms)
     end
 
     if has_fallback and is_network_failure(result) then
-        print(string.format("[EventScan] Основной Worker (%s) не ответил: %s. Пробую резервный (%s)...",
+        DC.print(string.format("[EventScan] Основной Worker (%s) не ответил: %s. Пробую резервный (%s)...",
             active_worker_url, tostring(result and result.err or "timeout"), WORKER_URL_FALLBACK))
 
         local fallback_result = attempt(WORKER_URL_FALLBACK, timeout_ms)
         if fallback_result and fallback_result.ok then
             active_worker_url = WORKER_URL_FALLBACK
             DC.fallback_since = os.clock()
-            print(string.format("[EventScan] Резервный Worker (%s) сработал. Переключаюсь на него до конца сессии.", WORKER_URL_FALLBACK))
+            DC.print(string.format("[EventScan] Резервный Worker (%s) сработал. Переключаюсь на него до конца сессии.", WORKER_URL_FALLBACK))
             return fallback_result
         end
 
-        print(string.format("[EventScan] Резервный Worker (%s) тоже не ответил: %s.",
+        DC.print(string.format("[EventScan] Резервный Worker (%s) тоже не ответил: %s.",
             WORKER_URL_FALLBACK, tostring(fallback_result and fallback_result.err or "timeout")))
 
         return fallback_result or result
@@ -2025,7 +2178,7 @@ local function resolve_espl_author(callback)
 
                 local ok_a, err_a = DC.avatar_fetch(hwid)
                 if not ok_a then
-                    print("[EventScan] Не удалось подготовить аватарку: " .. tostring(err_a))
+                    DC.print("[EventScan] Не удалось подготовить аватарку: " .. tostring(err_a))
                 end
             end
         end
@@ -2225,6 +2378,8 @@ end
 local espl_author_color_cache = {}
 
 local function espl_author_colors(author)
+    local ov = DC.slot_override and DC.slot_override(author)
+    if ov then return ov end
     local key = (author and author ~= "") and author or "—"
     local cached = espl_author_color_cache[key]
     if cached then return cached end
@@ -2242,6 +2397,80 @@ local function espl_author_colors(author)
     }
     espl_author_color_cache[key] = colors
     return colors
+end
+
+-- ===== Custom color for the slots booked by the local user =====
+DC.SLOT_FILE  = DATA_DIR .. "slot_color.txt"
+DC.slot_rgb   = nil   -- nil = automatic color (like every other author)
+DC.slot_cache = nil
+DC.slot_dirty = false
+
+function DC.slot_auto_rgb()
+    local key = (espl_local_author and espl_local_author ~= "") and espl_local_author or "—"
+    return espl_hsl_to_rgb(espl_string_hash(key) % 360, 0.65, 0.52)
+end
+
+function DC.slot_override(author)
+    if not DC.slot_rgb then return nil end
+    if not espl_local_author or espl_local_author == "" or author ~= espl_local_author then return nil end
+    if not DC.slot_cache then
+        local r, g, b = DC.slot_rgb[1], DC.slot_rgb[2], DC.slot_rgb[3]
+        DC.slot_cache = {
+            border     = imgui.ImVec4(r, g, b, 1.0),
+            border_dim = imgui.ImVec4(r, g, b, 0.5),
+            bg         = imgui.ImVec4(r * 0.30, g * 0.30, b * 0.30, 1.0),
+            bg_hover   = imgui.ImVec4(r * 0.45, g * 0.45, b * 0.45, 1.0),
+            bg_dim     = imgui.ImVec4(r * 0.20, g * 0.20, b * 0.20, 0.7),
+            accent     = imgui.ImVec4(math.min(r * 1.35, 1), math.min(g * 1.35, 1), math.min(b * 1.35, 1), 1.0),
+        }
+    end
+    return DC.slot_cache
+end
+
+function DC.slot_set(r, g, b)
+    DC.slot_rgb   = { r, g, b }
+    DC.slot_cache = nil
+end
+
+function DC.slot_clear()
+    DC.slot_rgb   = nil
+    DC.slot_cache = nil
+    os.remove(DC.SLOT_FILE)
+end
+
+function DC.slot_save()
+    if not DC.slot_rgb then return end
+    local f = io.open(DC.SLOT_FILE, "w")
+    if not f then return end
+    f:write(DC.theme_hex(DC.slot_rgb[1], DC.slot_rgb[2], DC.slot_rgb[3], 1.0))
+    f:close()
+end
+
+function DC.slot_load()
+    local f = io.open(DC.SLOT_FILE, "r")
+    if not f then return end
+    local hex = tostring(f:read("*a") or ""):match("%x%x%x%x%x%x")
+    f:close()
+    if not hex then return end
+    DC.slot_set(tonumber(hex:sub(1, 2), 16) / 255,
+                tonumber(hex:sub(3, 4), 16) / 255,
+                tonumber(hex:sub(5, 6), 16) / 255)
+end
+DC.slot_load()
+
+-- fills the picker buffer for the selected tab (1 = main color, 2 = my slots)
+function DC.color_load_buf()
+    if DC.color_mode == 2 then
+        local r, g, b
+        if DC.slot_rgb then
+            r, g, b = DC.slot_rgb[1], DC.slot_rgb[2], DC.slot_rgb[3]
+        else
+            r, g, b = DC.slot_auto_rgb()
+        end
+        DC.color_buf[0], DC.color_buf[1], DC.color_buf[2] = r, g, b
+    else
+        DC.color_buf[0], DC.color_buf[1], DC.color_buf[2] = DC.theme[1], DC.theme[2], DC.theme[3]
+    end
 end
 
 local function espl_short_nick(author)
@@ -2664,7 +2893,8 @@ imgui.OnFrame(function() return espl_open[0] end, function()
             if imgui.Button("##es_color_btn", imgui.ImVec2(sq, sq)) then
                 DC.color_open = not DC.color_open
                 if DC.color_open then
-                    DC.color_buf[0], DC.color_buf[1], DC.color_buf[2] = DC.theme[1], DC.theme[2], DC.theme[3]
+                    DC.color_mode = 1
+                    DC.color_load_buf()
                     DC.color_focus = true
                 end
             end
@@ -2938,6 +3168,7 @@ end)
 
 DC.color_open  = false
 DC.color_focus = false
+DC.color_mode  = 1
 DC.color_buf   = imgui.new.float[3](DC.theme[1], DC.theme[2], DC.theme[3])
 
 DC.color_frame = imgui.OnFrame(function() return DC.color_open and espl_open[0] end, function()
@@ -2968,15 +3199,37 @@ DC.color_frame = imgui.OnFrame(function() return DC.color_open and espl_open[0] 
         imgui.WindowFlags.AlwaysAutoResize)
 
     local W = 200
-    center_text(u8("Основной цвет"), hexcol(GREEN_BRIGHT))
+    center_text(DC.color_mode == 2 and u8("Цвет моих полей") or u8("Основной цвет"), hexcol(GREEN_BRIGHT))
+
+    do
+        local tab_gap = 6
+        local tab_w   = (W - tab_gap) / 2
+        local labels  = { u8("Основной"), u8("Мои поля") }
+        for i = 1, 2 do
+            local active = DC.color_mode == i
+            imgui.PushStyleColor(imgui.Col.Button, active and hexcol(GREEN_MID) or DC.tc(0.18, 0.22, 0.18, 1))
+            if imgui.Button(labels[i] .. "##es_cmode" .. i, imgui.ImVec2(tab_w, 26)) and not active then
+                if DC.slot_dirty then DC.slot_dirty = false DC.slot_save() end
+                DC.color_mode = i
+                DC.color_load_buf()
+            end
+            imgui.PopStyleColor(1)
+            if i == 1 then imgui.SameLine(0, tab_gap) end
+        end
+    end
 
     local flags = (imgui.ColorEditFlags.PickerHueWheel or 0)
         + (imgui.ColorEditFlags.NoSidePreview or 0)
         + (imgui.ColorEditFlags.NoInputs or 0)
     imgui.PushItemWidth(W)
-    if imgui.ColorPicker3('##es_color_pick', DC.color_buf, flags) then
-        DC.theme_apply(DC.color_buf[0], DC.color_buf[1], DC.color_buf[2])
-        DC.theme_dirty = true
+    if imgui.ColorPicker3('##es_color_pick' .. DC.color_mode, DC.color_buf, flags) then
+        if DC.color_mode == 2 then
+            DC.slot_set(DC.color_buf[0], DC.color_buf[1], DC.color_buf[2])
+            DC.slot_dirty = true
+        else
+            DC.theme_apply(DC.color_buf[0], DC.color_buf[1], DC.color_buf[2])
+            DC.theme_dirty = true
+        end
     end
     imgui.PopItemWidth()
 
@@ -2985,6 +3238,10 @@ DC.color_frame = imgui.OnFrame(function() return DC.color_open and espl_open[0] 
         DC.theme_dirty = false
         DC.theme_save()
     end
+    if DC.slot_dirty and not imgui.IsMouseDown(0) then
+        DC.slot_dirty = false
+        DC.slot_save()
+    end
 
     local gap = 8
     local bw  = (W - gap) / 2
@@ -2992,14 +3249,21 @@ DC.color_frame = imgui.OnFrame(function() return DC.color_open and espl_open[0] 
     local avail = imgui.GetContentRegionAvail().x
     bw = (avail - gap) / 2
     if imgui.Button(u8("Сбросить"), imgui.ImVec2(bw, 28)) then
-        local d = DC.THEME_DEFAULT
-        DC.color_buf[0], DC.color_buf[1], DC.color_buf[2] = d[1], d[2], d[3]
-        DC.theme_apply(d[1], d[2], d[3])
-        DC.theme_save()
+        if DC.color_mode == 2 then
+            DC.slot_clear()
+            DC.slot_dirty = false
+            DC.color_load_buf()
+        else
+            local d = DC.THEME_DEFAULT
+            DC.color_buf[0], DC.color_buf[1], DC.color_buf[2] = d[1], d[2], d[3]
+            DC.theme_apply(d[1], d[2], d[3])
+            DC.theme_save()
+        end
     end
     imgui.SameLine(0, gap)
     if imgui.Button(u8("Готово"), imgui.ImVec2(bw, 28)) then
         DC.theme_save()
+        if DC.slot_dirty then DC.slot_dirty = false DC.slot_save() end
         DC.color_open = false
     end
 
@@ -3027,6 +3291,7 @@ local function show_toast(text, color_hex)
         return
     end
 
+    DC.trace('toast: ' .. tostring(text))
     toast_state.text    = text
     toast_state.color   = color_hex and hexcol(color_hex) or hexcol(GREEN_BRIGHT)
     toast_state.closing = false
@@ -3063,6 +3328,7 @@ local function show_ess_toast(text, color_hex)
         return
     end
 
+    DC.trace('ess toast: ' .. tostring(text))
     ess_toast_state.text    = text
     ess_toast_state.color   = color_hex and hexcol(color_hex) or hexcol(GREEN_BRIGHT)
     ess_toast_state.closing = false
@@ -3694,19 +3960,25 @@ local function capture_and_upload_screenshot(callback)
     local root_folder = screens_root_folder
 
     DC.spawn(function()
+        DC.trace('capture: start')
         local _, baseline_err, baseline_time = find_latest_screenshot_in(root_folder)
+        DC.trace('capture: baseline ok')
         baseline_time = baseline_time or 0
 
+        DC.trace('capture: chatlog lookup')
         local chatlog_path = get_cached_chatlog_path()
+        DC.trace('capture: chatlog=' .. tostring(chatlog_path))
         local chatlog_baseline_size = nil
         if chatlog_path then
             local ok_a, attr = pcall(lfs.attributes, chatlog_path)
             chatlog_baseline_size = (ok_a and attr) and attr.size or 0
         end
 
+        DC.trace('capture: pressing F8')
         setVirtualKeyDown(vkeys.VK_F8, true)
         wait(50)
         setVirtualKeyDown(vkeys.VK_F8, false)
+        DC.trace('capture: F8 released')
 
         local target_file
         local chat_notice_shown = false
@@ -3745,7 +4017,9 @@ local function capture_and_upload_screenshot(callback)
             return callback(nil)
         end
 
+        DC.trace('capture: file found ' .. tostring(target_file))
         wait_until_file_stable(target_file)
+        DC.trace('capture: file stable')
 
         local file = nil
         for attempt = 1, 4 do
@@ -3762,16 +4036,19 @@ local function capture_and_upload_screenshot(callback)
         local binary_data = file:read("*a")
         file:close()
 
+        DC.trace('capture: file read, bytes=' .. tostring(#binary_data) .. ', uploading')
         show_toast(u8("Сканирую..."), GREEN_BRIGHT)
 
         local hwid_value = get_hwid()
         local result = try_worker_urls(screenshot_upload_worker, function(url)
-            return { WORKER_TOKEN, binary_data, hwid_value }
+            return { WORKER_TOKEN, binary_data, hwid_value, DC.LOG_FILE }
         end, 20000)
+        DC.trace('capture: upload result ok=' .. tostring(result and result.ok) .. ' err=' .. tostring(result and result.err))
         if result and result.ok then
             show_toast(u8("Готово!"), GREEN_BRIGHT)
             wait(2000)
             hide_toast()
+            DC.trace('capture: callback')
             callback(result.url)
         else
             local err = result and result.err or "timeout"
@@ -3898,6 +4175,7 @@ local function check_for_update()
         local thr = DC.effil_start(version_check_worker, channel, VERSION_CHECK_URL)
 
         local result = wait_for_channel(channel, 15000, thr)
+        DC.trace('update check: ok=' .. tostring(result and result.ok) .. ' remote=' .. tostring(result and result.version) .. ' local=' .. tostring(SCRIPT_VERSION))
         if result and result.ok and result.version then
             if result.version ~= SCRIPT_VERSION then
                 update_available      = true
@@ -4009,6 +4287,7 @@ function DC.require(fn)
     DC.spawn(function()
         local r = DC.fetch_status()
         DC.checking = false
+        DC.trace('auth check: ok=' .. tostring(r and r.ok) .. ' allowed=' .. tostring(r and r.allowed) .. ' linked=' .. tostring(r and r.discord_linked) .. ' err=' .. tostring(r and r.err))
 
         if not (r and r.ok) then
             es_msg("Не удалось проверить авторизацию: " .. tostring(r and r.err or "timeout"), "FF4444")
@@ -4031,7 +4310,14 @@ end
 
 sampRegisterChatCommand = function(name, handler)
     DC.raw_register(name, function(params)
-        DC.require(function() handler(params) end)
+        DC.trace("command: /" .. tostring(name) .. " params=" .. tostring(params))
+        DC.require(function()
+            local ok, err = pcall(handler, params)
+            if not ok then
+                DC.trace("COMMAND ERROR /" .. tostring(name) .. ": " .. tostring(err))
+                DC.print("[EventScan] Ошибка в команде /" .. tostring(name) .. ": " .. tostring(err))
+            end
+        end)
     end)
 end
 
@@ -4168,6 +4454,7 @@ function DC.key_name()
 end
 
 function DC.tp_set_cursor(state)
+    DC.trace('cursor unlocked=' .. tostring(state))
     if DC.cursor_unlocked and not state then DC.pos_save_if_moved() end
     DC.cursor_unlocked = state
     if DC.tp_frame then
@@ -4177,6 +4464,7 @@ function DC.tp_set_cursor(state)
 end
 
 function DC.tp_set_visible(v)
+    DC.trace('tp_set_visible ' .. tostring(v))
     if v and not DC.tp_timer.visible then
         DC.tp_timer.opened_at = os.time()
         DC.people_max = #unique_players_order
@@ -4202,7 +4490,7 @@ function DC.duration_format(sec)
 end
 
 function DC.send_cmd(cmd)
-    DC.spawn(function() sampSendChat(cmd) end)
+    DC.spawn(function() wait(0) sampSendChat(cmd) end)
 end
 
 function DC.cursor_start_loop()
@@ -4303,7 +4591,7 @@ function DC.tp_handle_off(clean)
     if DC.tp_timer.end_epoch > os.time() then
         DC.tp_timer.end_epoch = os.time()
         DC.tp_save()
-        print("[EventScan] Телепорт выключен (" .. tostring(who) .. "), таймер остановлен досрочно.")
+        DC.print("[EventScan] Телепорт выключен (" .. tostring(who) .. "), таймер остановлен досрочно.")
         -- окно НЕ закрываем; tp_armed остаётся true -> tp_watch_start запустит автоскан
     end
 end
@@ -4316,7 +4604,7 @@ function DC.sampev_onServerMessage(color, text)
     pcall(DC.give_register, clean)
     pcall(DC.bank_on_message, clean)
     local ok_off, err_off = pcall(DC.tp_handle_off, clean)
-    if not ok_off then print("[EventScan] Ошибка в tp_handle_off: " .. tostring(err_off)) end
+    if not ok_off then DC.print("[EventScan] Ошибка в tp_handle_off: " .. tostring(err_off)) end
 
     if not clean:find("[Game Event]", 1, true) then return end
     if not DC.tp_has_keyword(clean) then return end
@@ -4329,6 +4617,7 @@ function DC.sampev_onServerMessage(color, text)
 
     secs = tonumber(secs)
     if not secs then return end
+    DC.trace('event started by me: seconds=' .. tostring(secs))
 
     DC.tp_timer.total     = secs
     DC.tp_timer.end_epoch = os.time() + secs
@@ -4396,10 +4685,10 @@ function DC.icon_prepare(key)
             local r = wait_for_channel(ch, 25000, thr)
             if r == nil then pcall(function() thr:cancel(0) end) end
             if not (r and r.ok) then
-                print("[EventScan] Не удалось скачать иконку " .. key .. ": " .. tostring(r and r.err or "timeout"))
+                DC.print("[EventScan] Не удалось скачать иконку " .. key .. ": " .. tostring(r and r.err or "timeout"))
             end
         else
-            print("[EventScan] Не удалось запустить загрузку иконки " .. key .. ": " .. tostring(thr))
+            DC.print("[EventScan] Не удалось запустить загрузку иконки " .. key .. ": " .. tostring(thr))
         end
     end
     if DC.is_image_file(path) then
@@ -4430,7 +4719,7 @@ function DC.icons_download()
         DC.spawn(function()
             local ok, err = pcall(DC.icon_prepare, key)
             if not ok then
-                print("[EventScan] Ошибка подготовки иконки " .. key .. ": " .. tostring(err))
+                DC.print("[EventScan] Ошибка подготовки иконки " .. key .. ": " .. tostring(err))
             end
         end)
     end
@@ -4470,7 +4759,7 @@ end, function()
         espl_panel.avatar_ready = false
         if not espl_panel.avatar_tex then
             os.remove(espl_panel.avatar_file)
-            print("[EventScan] Не удалось создать текстуру аватарки, файл удалён.")
+            DC.print("[EventScan] Не удалось создать текстуру аватарки, файл удалён.")
         end
     end
 end)
@@ -4752,6 +5041,7 @@ function DC.alert_push(name, hp, armor)
             return
         end
     end
+    DC.trace('alert: ' .. tostring(name) .. ' hp=' .. tostring(hp) .. ' armor=' .. tostring(armor))
     DC.alerts[#DC.alerts + 1] = { name = name, hp = hp, armor = armor, t = now }
     while #DC.alerts > DC.ALERT_MAX do table.remove(DC.alerts, 1) end
 end
@@ -4783,9 +5073,11 @@ end
 
 function DC.alert_kick(a)
     local name = a.name
+    DC.trace('alert kick: ' .. tostring(name))
     local pm   = "/pm " .. name .. " 1 Тебя заспавнили за нарушение правил мероприятия, " .. DC.alert_pm_reason(a)
     DC.alert_remove(name)
     DC.spawn(function()
+        wait(0)
         sampSendChat("/spplayer " .. name)
         wait(700)
         sampSendChat(pm)
@@ -4896,6 +5188,7 @@ end)
 DC.alert_frame.HideCursor = true
 DC.WINNER_SUM = 50
 
+
 DC.winner = {
     open      = false,
     focus     = false,
@@ -4906,6 +5199,7 @@ DC.winner = {
 
 function DC.winner_show()
     local w = DC.winner
+    DC.trace('winner window opened')
     w.title_buf[0] = 0
     w.id_buf[0]    = 0
     w.error = ""
@@ -4919,6 +5213,7 @@ end
 
 function DC.winner_submit()
     local w = DC.winner
+    DC.trace('winner_submit: begin')
 
     local title = ffi.string(w.title_buf):gsub("^%s+", ""):gsub("%s+$", "")
     if title == "" then
@@ -4932,7 +5227,7 @@ function DC.winner_submit()
         return
     end
     local id = tonumber(id_str)
-    if not sampIsPlayerConnected(id) then
+    if id > 1003 or not sampIsPlayerConnected(id) then
         w.error = u8("Игрок с ID " .. id .. " не найден")
         return
     end
@@ -4940,22 +5235,54 @@ function DC.winner_submit()
     local sum = DC.WINNER_SUM
 
     local name = sampGetPlayerNickname(id)
+    if not name or name == "" then
+        w.error = u8("Player not found")
+        return
+    end
 
     local ok_dec, title_ansi = pcall(function() return u8:decode(title) end)
     if not ok_dec or not title_ansi then title_ansi = title end
 
     DC.last_winner = { nick = name, title = title_ansi, sum = sum, time = os.time() }
 
-    local msg = string.format('/ao Победителем мероприятия "%s" стал %s и получает %dКК',
-        title_ansi, name, sum)
+    local AO_FMT = '/ao Победителем мероприятия "%s" стал %s и получает %dКК'
+    local msg = string.format(AO_FMT, title_ansi, name, sum)
+    -- SA-MP chat buffer is small: if the line is too long, only the title is shortened
+    if #msg > 140 then
+        local cut = math.max(#title_ansi - (#msg - 140), 1)
+        msg = string.format(AO_FMT, title_ansi:sub(1, cut), name, sum)
+        if #msg > 140 then msg = msg:sub(1, 140) end
+    end
 
     w.open = false
+    w.pending = { msg = msg, name = name, sum = sum, title = title_ansi }
+    DC.trace('winner_submit: pending set, nick=' .. tostring(name) .. ' sum=' .. tostring(sum) .. ' title=' .. tostring(title_ansi) .. ' msg=' .. msg)
+end
 
+-- runs outside of the ImGui frame (normal MoonLoader thread)
+function DC.winner_loop()
     DC.spawn(function()
-        sampSendChat(msg)
-        DC.tp_set_visible(false)
-        wait(DC.BANK_CMD_DELAY)
-        DC.bank_start(name, sum * 1000000, title_ansi)
+        while true do
+            wait(0)
+            local p = DC.winner.pending
+            if p then
+                DC.winner.pending = nil
+                local ok, err = pcall(function()
+                    DC.trace('loop: sampSendChat /ao')
+                    sampSendChat(p.msg)
+                    DC.trace('loop: /ao sent, hiding window')
+                    DC.tp_set_visible(false)
+                    DC.trace('loop: window hidden, waiting')
+                    wait(DC.BANK_CMD_DELAY)
+                    DC.trace('loop: bank_start')
+                    DC.bank_start(p.name, p.sum * 1000000, p.title)
+                    DC.trace('loop: bank_start done')
+                end)
+                if not ok then
+                    DC.print("[EventScan] winner_loop error: " .. tostring(err))
+                end
+            end
+        end
     end)
 end
 
@@ -5024,7 +5351,7 @@ end, function()
     imgui.AlignTextToFramePadding()
     do
         local pid = tonumber(ffi.string(w.id_buf))
-        if pid and sampIsPlayerConnected(pid) then
+        if pid and pid >= 0 and pid <= 1003 and pid == math.floor(pid) and sampIsPlayerConnected(pid) then
             local nick_max = input_w - 70 - 8
             imgui.TextColored(hexcol(GREEN_BRIGHT),
                 espl_truncate_to_width(sampGetPlayerNickname(pid), nick_max))
@@ -5059,18 +5386,20 @@ DC.BANK_ITEM_WITHDRAW = 4
 DC.BANK_ITEM_TRANSFER = 5
 DC.BANK_CMD_DELAY     = 700
 DC.BANK_STEP_TIMEOUT  = 8
-DC.BANK_FALLBACK_MS   = 150
+DC.BANK_FALLBACK_MS   = 300
 
 
 
 DC.bank = { state = "idle", menu_id = nil, nick = "", title = "", amount = 0, deadline = 0, run = 0 }
 
 function DC.bank_set(state)
+    DC.trace('bank state: ' .. tostring(DC.bank.state) .. ' -> ' .. tostring(state))
     DC.bank.state    = state
     DC.bank.deadline = os.clock() + DC.BANK_STEP_TIMEOUT
 end
 
 function DC.bank_reset()
+    DC.trace('bank_reset')
     DC.bank.state   = "idle"
     DC.bank.menu_id = nil
 end
@@ -5085,6 +5414,7 @@ end
 
 function DC.bank_start(nick, amount, title)
     local b = DC.bank
+    DC.trace('bank_start')
     b.run      = b.run + 1
     b.nick     = nick
     b.title    = title or ""
@@ -5126,6 +5456,7 @@ function DC.bank_on_message(clean)
     if not num then return end
     local balance = tonumber((num:gsub("%.", "")))
     if not balance then return end
+    DC.trace("bank: balance=" .. tostring(balance) .. " need=" .. tostring(b.amount))
 
     if balance < b.amount then
         DC.bank_set("menu_withdraw")
@@ -5137,13 +5468,21 @@ function DC.bank_on_message(clean)
 end
 
 function DC.bank_send(id, button, item, text)
-    sampSendDialogResponse(id, button, item, text)
+    DC.spawn(function()
+        wait(0)
+        DC.trace('send dialog response id=' .. tostring(id) .. ' btn=' .. tostring(button) .. ' item=' .. tostring(item))
+        local ok, err = pcall(sampSendDialogResponse, id, button, item, text)
+        DC.trace('dialog response sent ok=' .. tostring(ok))
+        if not ok then DC.print("[EventScan] sampSendDialogResponse error: " .. tostring(err)) end
+    end)
 end
 
 function DC.sampev_onShowDialog(id, style, title, button1, button2, text)
+    DC.trace('onShowDialog id=' .. tostring(id) .. ' style=' .. tostring(style) .. ' title=' .. tostring(title):sub(1, 60) .. ' bank=' .. tostring(DC.bank.state))
     local b  = DC.bank
     local st = b.state
     if st == "idle" then return end
+    DC.trace("dialog id=" .. tostring(id) .. " style=" .. tostring(style) .. " state=" .. tostring(st))
 
     if DC.bank_is_list(style) then
         b.menu_id = id
@@ -5160,6 +5499,10 @@ function DC.sampev_onShowDialog(id, style, title, button1, button2, text)
         elseif st == "menu_transfer" then
             DC.bank_set("nick_input")
             DC.bank_send(id, 1, DC.BANK_ITEM_TRANSFER, "")
+            return false
+        elseif st == "nick_input" or st == "withdraw_input" then
+            -- late copy of the menu (fallback already answered it): swallow, do not abort
+            DC.trace("late menu dialog swallowed, state=" .. tostring(st))
             return false
         elseif st == "closing" then
             DC.bank_send(id, 0, 65535, "")
@@ -5190,8 +5533,15 @@ function DC.sampev_onShowDialog(id, style, title, button1, button2, text)
                 wait(2500)
                 local bb = DC.bank
                 if bb.run == my_run and bb.state == "closing" then
-                    if bb.menu_id then sampSendDialogResponse(bb.menu_id, 0, 65535, "") end
+                    DC.trace('bank watchdog: closing')
+                    local okd, active = pcall(function()
+                        return sampIsDialogActive() and sampGetCurrentDialogId() == bb.menu_id
+                    end)
+                    if bb.menu_id and okd and active then
+                        pcall(sampSendDialogResponse, bb.menu_id, 0, 65535, "")
+                    end
                     DC.bank_reset()
+                    DC.trace('bank watchdog: done')
                 end
             end)
             return false
@@ -5209,6 +5559,7 @@ DC.tp_armed      = false
 function DC.auto_es(delay, on_done)
     DC.spawn(function()
         wait(delay or DC.AUTO_ES_DELAY)
+        DC.trace('auto_es fire')
         if DC.es_handler then
             DC.require(function() DC.es_handler(on_done) end)
         end
@@ -5216,10 +5567,11 @@ function DC.auto_es(delay, on_done)
 end
 
 function DC.auto_ess(title, nick)
-    local cmd = "/ess " .. title .. " " .. nick
+    DC.trace('auto_ess')
     DC.require(function()
-        local ok = pcall(sampProcessChatInput, cmd)
-        if not ok then sampSendChat(cmd) end
+        if not DC.ess_handler then return end
+        local ok, err = pcall(DC.ess_handler, title .. " " .. nick)
+        if not ok then DC.print("[EventScan] auto /ess error: " .. tostring(err)) end
     end)
 end
 
@@ -5230,6 +5582,7 @@ function DC.tp_watch_start()
             local t = DC.tp_timer
             if DC.tp_armed and t.end_epoch > 0 and os.time() >= t.end_epoch then
                 DC.tp_armed = false
+                DC.trace('teleport timer finished, scan prompt shown')
                 DC.scan_prompt_show()
             end
         end
@@ -5260,6 +5613,7 @@ end
 
 function DC.scan_prompt_accept()
     local sp = DC.scan_prompt
+    DC.trace('scan prompt: Enter pressed (open=' .. tostring(sp.open) .. ' closing=' .. tostring(sp.closing) .. ')')
     if not sp.open or sp.closing then return end
     -- закрываем мгновенно, чтобы окно не попало на скриншот
     sp.open    = false
@@ -5403,6 +5757,7 @@ function DC.offline_write(list)
 end
 
 function DC.offline_save(payload)
+    DC.trace('offline_save: report stored locally')
     local list = DC.offline_load()
 
     local meta = {}
@@ -5438,6 +5793,7 @@ function DC.offline_update(entry)
 end
 
 function DC.deliver(payload)
+    DC.trace('deliver: event=' .. tostring(payload.event) .. ' winner=' .. tostring(payload.winner) .. ' scans=' .. #(payload.scans or {}) .. ' players=' .. #(payload.players or {}))
     local hwid = get_hwid()
     if not hwid then return { ok = false, err = "no_hwid" } end
 
@@ -5448,7 +5804,7 @@ function DC.deliver(payload)
                 local data = f:read("*a")
                 f:close()
                 local r = try_worker_urls(screenshot_upload_worker, function(url)
-                    return { WORKER_TOKEN, data, hwid }
+                    return { WORKER_TOKEN, data, hwid, DC.LOG_FILE }
                 end, 20000)
                 if r and r.ok and r.url then
                     sc.url  = r.url
@@ -5483,6 +5839,7 @@ function DC.deliver(payload)
 end
 
 function DC.send_report(payload, on_done)
+    DC.trace('send_report start')
     local hwid = get_hwid()
     if not hwid then
         es_msg("HWID ещё определяется в фоне — попробуй отправить отчёт через пару секунд.", "FFAA00")
@@ -5494,6 +5851,7 @@ function DC.send_report(payload, on_done)
 
     DC.spawn(function()
         local result = DC.deliver(payload)
+        DC.trace('deliver finished ok=' .. tostring(result and result.ok) .. ' err=' .. tostring(result and result.err))
         if result and result.ok then
             show_ess_toast(u8("Готово!"), GREEN_BRIGHT)
             wait(2000)
@@ -5534,7 +5892,7 @@ function DC.offline_flush()
 
         local list = DC.offline_load()
         if #list == 0 then return end
-        print(string.format("[EventScan] В локальной очереди отчётов: %d. Пробую отправить...", #list))
+        DC.print(string.format("[EventScan] В локальной очереди отчётов: %d. Пробую отправить...", #list))
 
         local sent = 0
         for _, entry in ipairs(list) do
@@ -5549,7 +5907,7 @@ function DC.offline_flush()
                     entry.tries = (entry.tries or 0) + 1
                     DC.offline_update(entry)
                     local err = result and result.err or "timeout"
-                    print("[EventScan] Отложенный отчёт не отправлен: " .. tostring(err))
+                    DC.print("[EventScan] Отложенный отчёт не отправлен: " .. tostring(err))
                     if is_hwid_error(err) or is_network_failure(result) then break end
                 end
             end
@@ -5677,7 +6035,7 @@ function DC.hp_start_loop()
             if DC.tp_timer.visible then
                 local ok, err = pcall(DC.hp_scan_once)
                 if not ok then
-                    print("[EventScan] Ошибка слежения за ХП/бронёй: " .. tostring(err))
+                    DC.print("[EventScan] Ошибка слежения за ХП/бронёй: " .. tostring(err))
                 end
                 pcall(DC.hp_flush_pending)
             else
@@ -5706,7 +6064,7 @@ function DC.intro_mark_seen()
         f:write("1")
         f:close()
     else
-        print("[EventScan] Не удалось сохранить отметку о прочтении окна.")
+        DC.print("[EventScan] Не удалось сохранить отметку о прочтении окна.")
     end
 end
 
@@ -5865,6 +6223,7 @@ function DC.session_collect()
 end
 
 function DC.session_clear_files()
+    DC.trace('session files cleared')
     os.remove(DC.SESSION_FILE)
     os.remove(DC.SESSION_FILE .. ".tmp")
 end
@@ -5896,6 +6255,7 @@ function DC.session_save(force)
     f:close()
     os.remove(DC.SESSION_FILE)
     if os.rename(tmp, DC.SESSION_FILE) then
+        DC.trace('session saved: bytes=' .. #body .. ' scans=' .. #st.scans .. ' players=' .. #st.players)
         DC.session_last   = body
         DC.session_last_t = now
     end
@@ -5979,12 +6339,14 @@ function DC.session_restore()
         DC.tp_save()
     end
 
+    DC.trace('session restored: scans=' .. #pending_scans .. ' players=' .. #unique_players_order .. ' reports=' .. #pending_reports)
     if d.scanning then start_detection_loop() end
 
     return true
 end
 
 function DC.session_reset()
+    DC.trace('session reset (/esc)')
     stop_detection_loop()
     pending_scans        = {}
     pending_reports      = {}
@@ -6017,7 +6379,7 @@ function DC.session_start()
         end
 
         local ok, res = pcall(DC.session_restore)
-        if not ok then print("[EventScan] Ошибка восстановления сессии: " .. tostring(res)) end
+        if not ok then DC.print("[EventScan] Ошибка восстановления сессии: " .. tostring(res)) end
         DC.session_ready = true
 
         if ok and res then
@@ -6029,13 +6391,14 @@ function DC.session_start()
         while true do
             wait(1000)
             local ok2, err2 = pcall(DC.session_save)
-            if not ok2 then print("[EventScan] Ошибка сохранения сессии: " .. tostring(err2)) end
+            if not ok2 then DC.print("[EventScan] Ошибка сохранения сессии: " .. tostring(err2)) end
         end
     end)
 end
 
 function onScriptTerminate(scr, quit_game)
     if scr == thisScript() then
+        DC.trace('SCRIPT TERMINATE quit_game=' .. tostring(quit_game))
         if DC.session_ready then pcall(DC.session_save, true) end
         scanning_active = false
         pcall(DC.pos_save_if_moved)
@@ -6044,7 +6407,12 @@ function onScriptTerminate(scr, quit_game)
 end
 
 function main()
+    DC.trace('main: waiting for SAMP')
     while not isSampAvailable() do wait(100) end
+    do
+        local ok, sname = pcall(sampGetCurrentServerName)
+        DC.trace('main: SAMP available, server=' .. tostring(ok and sname or '?'))
+    end
 
     resolve_screens_root(function(path)
         screens_root_folder = path
@@ -6052,7 +6420,10 @@ function main()
 
     DC.icons_download()
 
-    resolve_hwid(function() resolve_espl_author() end)
+    resolve_hwid(function(h)
+        DC.trace('hwid resolved: ' .. tostring(h):sub(1, 8) .. '...')
+        resolve_espl_author()
+    end)
     DC.offline_flush()
     check_for_update()
 
@@ -6066,6 +6437,7 @@ function main()
     if not DC.intro_seen() then DC.intro_show() end
 
     DC.es_handler = function(on_done)
+        DC.trace('es_handler start')
         local done = type(on_done) == "function" and on_done or nil
         start_detection_loop()
 
@@ -6087,8 +6459,10 @@ function main()
             })
 
             table.insert(pending_reports, table.concat(lines, "\n"))
+            DC.trace("es_handler: saving session")
 
             if DC.session_ready then pcall(DC.session_save, true) end
+            DC.trace("es_handler: session saved")
 
             if done then done(true) end
         end)
@@ -6096,7 +6470,8 @@ function main()
 
     sampRegisterChatCommand("es", DC.es_handler)
 
-    sampRegisterChatCommand("ess", function(params)
+    DC.ess_handler = function(params)
+        DC.trace('ess_handler start')
         if #pending_reports == 0 then
             es_msg("Очередь пуста, нечего отправлять. Сначала используйте {FFFF00}/es", "FFAA00")
             return
@@ -6186,7 +6561,8 @@ function main()
                 start_detection_loop()
             end
         end)
-    end)
+    end
+    sampRegisterChatCommand("ess", DC.ess_handler)
 
     sampRegisterChatCommand("eslast", function()
         fetch_last_report_from_d1(function(date_str, err)
@@ -6342,10 +6718,21 @@ function main()
     do
         local ok_ev, sampev = pcall(require, "samp.events")
         if ok_ev and sampev then
-            sampev.onServerMessage = DC.sampev_onServerMessage
-            sampev.onShowDialog    = DC.sampev_onShowDialog
+            sampev.onServerMessage = function(...)
+                local ok, err = pcall(DC.sampev_onServerMessage, ...)
+                if not ok then DC.print("[EventScan] onServerMessage error: " .. tostring(err)) end
+            end
+            sampev.onShowDialog = function(...)
+                local ok, res = pcall(DC.sampev_onShowDialog, ...)
+                if not ok then
+                    DC.print("[EventScan] onShowDialog error: " .. tostring(res))
+                    pcall(DC.bank_reset)
+                    return nil
+                end
+                return res
+            end
         else
-            print("[EventScan] samp.events не найден: слежение за чатом не работает")
+            DC.print("[EventScan] samp.events не найден: слежение за чатом не работает")
         end
     end
 
@@ -6356,9 +6743,12 @@ function main()
     DC.tp_watch_start()
     DC.cursor_start_loop()
     DC.scan_prompt_loop()
+    DC.winner_loop()
+    DC.heartbeat_start()
     DC.session_start()
 
     DC.raw_register("ehelper", function(params)
+        DC.trace("command: /ehelper params=" .. tostring(params))
         local secs = tonumber(tostring(params or ""):match("%d+"))
         if secs and secs > 0 then
             secs = math.min(secs, 86400)
