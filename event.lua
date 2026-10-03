@@ -144,7 +144,7 @@ local active_worker_url = WORKER_URL_PRIMARY
 local WORKER_TOKEN = "SET_YOUR_OWN_SECRET_HERE"
 local SCAN_RADIUS  = 200.0
 
-local SCRIPT_VERSION      = "1.8"
+local SCRIPT_VERSION      = "1.9"
 local VERSION_CHECK_URL   = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/version.txt"
 local UPDATE_DOWNLOAD_URL = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/event.lua"
 
@@ -201,6 +201,42 @@ function DC.trace(msg)
     end)
 end
 DC.log = DC.trace
+
+-- trace only for the first few frames after /esp (to find a native crash without log spam)
+DC.espl_trace_left = 0
+DC.espl_frames = 0
+DC.espl_tick_t = 0
+function DC.espl_tick()
+    DC.espl_frames = DC.espl_frames + 1
+    local now = os.clock()
+    if now - DC.espl_tick_t >= 0.5 then
+        DC.espl_tick_t = now
+        DC.trace(string.format("espl tick frames=%d mem=%.0fKB egc=%s", DC.espl_frames, collectgarbage("count"), DC.egc_info()))
+    end
+end
+
+-- sanitizers: server JSON may contain null (dkjson.null is a TABLE), never feed that into ImGui/string calls
+function DC.num(v)
+    if type(v) == "number" then return v end
+    return tonumber(v) or 0
+end
+function DC.str(v)
+    if type(v) == "string" then return v end
+    return nil
+end
+function DC.clean_top3(list)
+    local out = {}
+    if type(list) ~= "table" then return out end
+    for _, e in ipairs(list) do
+        if type(e) == "table" and #out < 8 then
+            out[#out + 1] = { author = DC.str(e.author) or "-", count = DC.num(e.count) }
+        end
+    end
+    return out
+end
+function DC.ftrace(msg)
+    if (DC.espl_trace_left or 0) > 0 then DC.trace("espl frame: " .. msg) end
+end
 
 function DC.print(...)
     local parts = {}
@@ -329,8 +365,61 @@ function DC.reap()
     end
 end
 
+function DC.reap()
+    local list = DC.ethreads
+    for i = #list, 1, -1 do
+        local ok, status, err = pcall(function() return list[i]:status() end)
+        if not ok then
+            table.remove(list, i)
+        elseif status == "completed" or status == "cancelled" or status == "failed" then
+            if status == "failed" then
+                DC.print("[EventScan] effil thread failed: " .. tostring(err))
+            end
+            table.remove(list, i)
+        end
+    end
+end
+
+-- effil has its own garbage collector for shared objects. It starts automatically in the middle of
+-- thread creation / thread exit and races with running effil threads. We switch the automatic one
+-- off and collect manually, only when no effil thread is running (see DC.effil_gc_loop).
+function DC.egc_info()
+    local ok, c = pcall(function() return effil.gc and effil.gc.count and effil.gc.count() end)
+    return ok and tostring(c) or "err"
+end
+
+DC.egc_paused = false
+if effil.gc and effil.gc.pause then
+    DC.egc_paused = pcall(effil.gc.pause)
+end
+DC.trace("effil.gc available=" .. tostring(effil.gc ~= nil) .. " paused=" .. tostring(DC.egc_paused) .. " count=" .. DC.egc_info())
+
+function DC.effil_gc_loop()
+    DC.spawn(function()
+        while true do
+            wait(5000)
+            DC.reap()
+            if not (DC.espl_open_ref and DC.espl_open_ref[0]) and DC.inflight == 0 and #DC.ethreads == 0 then
+                local before = DC.egc_info()
+                collectgarbage()
+                collectgarbage()
+                if effil.gc and effil.gc.collect then pcall(effil.gc.collect) end
+                local after = DC.egc_info()
+                if before ~= after then
+                    DC.trace("effil gc: idle collect " .. before .. " -> " .. after)
+                end
+            end
+        end
+    end)
+end
+
 function DC.effil_start(fn, ...)
     DC.reap()
+    do
+        local line = "?"
+        pcall(function() line = tostring(debug.getinfo(fn, "S").linedefined) end)
+        DC.trace("effil_start: worker@" .. line)
+    end
     local thr = effil.thread(fn)(...)
     DC.ethreads[#DC.ethreads + 1] = thr
     return thr
@@ -388,7 +477,18 @@ function DC.avatar_worker(channel, url, path)
     channel:push({ ok = true })
 end
 
-function DC.esp_wait_worker(channel, worker_url, hwid, date, version)
+function DC.esp_wait_worker(channel, worker_url, hwid, date, version, log_path)
+    local function wlog(m)
+        if not log_path then return end
+        pcall(function()
+            local f = io.open(log_path, "ab")
+            if f then
+                f:write(os.date("%Y-%m-%d %H:%M:%S") .. " [worker:esp_wait] " .. tostring(m) .. "\n")
+                f:close()
+            end
+        end)
+    end
+    wlog("start version=" .. tostring(version))
     local ok_r, requests = pcall(require, "requests")
     if not ok_r or not requests then
         channel:push({ ok = false, err = "no_requests" })
@@ -406,6 +506,7 @@ function DC.esp_wait_worker(channel, worker_url, hwid, date, version)
         end))
     end
 
+    wlog("request begin")
     local qs = "date=" .. date .. "&version=" .. url_encode(version or "")
     local ok, resp = pcall(requests.get, worker_url .. "/esp/wait?" .. qs, {
         headers = {
@@ -415,6 +516,7 @@ function DC.esp_wait_worker(channel, worker_url, hwid, date, version)
         timeout = 28
     })
 
+    wlog("request returned ok=" .. tostring(ok) .. " status=" .. tostring(ok and resp and resp.status_code))
     if not ok then
         channel:push({ ok = false, err = "network_fail: " .. tostring(resp) })
         return
@@ -434,7 +536,9 @@ function DC.esp_wait_worker(channel, worker_url, hwid, date, version)
         return
     end
 
+    wlog("json ok, pushing result")
     channel:push(data)
+    wlog("pushed, thread ends")
 end
 
 function DC.token_status_worker(channel, worker_url, token)
@@ -1975,6 +2079,7 @@ local function center_text(text, color)
 end
 
 local espl_open          = imgui_new.bool(false)
+DC.espl_open_ref = espl_open
 local espl_dates         = nil
 local espl_selected_date = nil
 local espl_schedule      = {}
@@ -2021,9 +2126,22 @@ local espl_top3 = {}
 
 DC.tex_trash = {}
 function DC.tex_discard()
-    local t = espl_panel.avatar_tex
-    if t then DC.tex_trash[#DC.tex_trash + 1] = t end
+    local tx = espl_panel.avatar_tex
+    if tx then DC.tex_trash[#DC.tex_trash + 1] = { tex = tx, t = os.clock() } end
     espl_panel.avatar_tex = nil
+end
+
+-- a texture is released only 1 second after it was dropped, so no draw list can still reference it
+function DC.tex_release()
+    local now = os.clock()
+    for i = #DC.tex_trash, 1, -1 do
+        local e = DC.tex_trash[i]
+        if now - e.t >= 1.0 then
+            DC.trace("tex_release: releasing texture")
+            if imgui.ReleaseTexture then pcall(imgui.ReleaseTexture, e.tex) end
+            table.remove(DC.tex_trash, i)
+        end
+    end
 end
 
 -- Размер PNG/JPEG из заголовка файла (без декодирования). Возвращает w, h или nil.
@@ -2078,6 +2196,22 @@ end
 
 -- Скачивает аватарку в готовый файл. Текстуру создаёт фоновый кадр DC.tex_frame.
 function DC.avatar_fetch(hwid)
+    if DC.avatar_busy and os.clock() - DC.avatar_busy < 40 then
+        DC.trace("avatar_fetch: skipped, already running")
+        return false, "busy"
+    end
+    DC.avatar_busy = os.clock()
+    local ok, a, b = pcall(DC.avatar_fetch_inner, hwid)
+    DC.avatar_busy = nil
+    if not ok then
+        DC.trace("avatar_fetch: ERROR " .. tostring(a))
+        return false, tostring(a)
+    end
+    return a, b
+end
+
+function DC.avatar_fetch_inner(hwid)
+    DC.trace("avatar_fetch: start")
     local final = DATA_DIR .. "espl_avatar.png"
     os.remove(final)
 
@@ -2088,9 +2222,17 @@ function DC.avatar_fetch(hwid)
 
     local r = wait_for_channel(ch, 25000, thr)
     if r == nil then pcall(function() thr:cancel(0) end) end
+    DC.trace("avatar_fetch: worker done ok=" .. tostring(r and r.ok) .. " err=" .. tostring(r and r.err))
     if not (r and r.ok and DC.is_image_file(final)) then
         os.remove(final)
         return false, tostring(r and r.err or "timeout")
+    end
+
+    local iw, ih = DC.image_size(final)
+    DC.trace("avatar_fetch: image size " .. tostring(iw) .. "x" .. tostring(ih))
+    if not iw or not ih or iw < 1 or ih < 1 or iw > 4096 or ih > 4096 then
+        os.remove(final)
+        return false, "bad_image_size"
     end
 
     espl_panel.avatar_file  = final
@@ -2100,7 +2242,7 @@ function DC.avatar_fetch(hwid)
 end
 
 local function espl_format_balance(val)
-    local s = tostring(math.abs(val))
+    local s = string.format("%.0f", math.abs(tonumber(val) or 0))
     local result = ""
     local len = #s
     for i = 1, len do
@@ -2168,7 +2310,7 @@ local function resolve_espl_author(callback)
         end, 15000)
 
         if result and result.ok and result.author then
-            espl_local_author = result.author
+            espl_local_author = DC.str(result.author) or espl_local_author
         end
 
         if result and result.ok and result.discord_linked then
@@ -2240,7 +2382,7 @@ local function espl_apply_schedule_result(result)
     if result and result.ok then
         local sched = {}
         for _, s in ipairs(result.slots or {}) do
-            sched[s.time] = { author = s.author, title = s.title }
+            sched[s.time] = { author = DC.str(s.author) or "", title = DC.str(s.title) or "" }
         end
         espl_schedule   = sched
         espl_load_error = ""
@@ -2272,8 +2414,9 @@ function DC.esp_start_polling(date_str)
                 local t0 = os.clock()
                 local channel = effil.channel()
 
+                DC.trace("esp poll: starting wait thread, version=" .. tostring(version))
                 local ok_s, thr = pcall(DC.effil_start, DC.esp_wait_worker,
-                    channel, active_worker_url, hwid, date_str, version)
+                    channel, active_worker_url, hwid, date_str, version, DC.LOG_FILE)
 
                 local result
                 if ok_s then
@@ -2282,6 +2425,7 @@ function DC.esp_start_polling(date_str)
                         DC.esp_thread = thr
                     end
                     result = wait_for_channel(channel, 32000, thr)
+                    DC.trace("esp poll: wait_for_channel returned " .. tostring(result and (result.ok and "ok" or result.err)))
                     if result == nil then pcall(function() thr:cancel(0) end) end
                     if DC.esp_thread == thr then
                         DC.esp_thread = nil
@@ -2296,33 +2440,38 @@ function DC.esp_start_polling(date_str)
 
                 if result and result.ok then
                     fail_streak = 0
+                    DC.trace(string.format("esp poll: ok changed=%s slots=%s top3=%s stats=%s", tostring(result.changed), tostring(type(result.slots) == "table" and #result.slots or "nil"), tostring(type(result.top3) == "table" and #result.top3 or "nil"), tostring(result.stats ~= nil)))
                     version = result.version or version
                     if result.changed then
+                        DC.espl_trace_left = 4
+                        DC.trace("esp poll: applying changed result")
                         espl_loading    = false
                         espl_load_error = ""
 
                         local sched = {}
                         for _, s in ipairs(result.slots or {}) do
-                            sched[s.time] = { author = s.author, title = s.title }
+                            sched[s.time] = { author = DC.str(s.author) or "", title = DC.str(s.title) or "" }
                         end
                         espl_schedule = sched
 
                         if result.stats then
-                            espl_panel.author  = result.stats.author
-                            espl_panel.today   = result.stats.reports_today or 0
-                            espl_panel.week    = result.stats.reports_week or 0
-                            espl_panel.all      = result.stats.reports_all or 0
-                            espl_panel.balance  = result.stats.balance or 0
+                            espl_panel.author  = DC.str(result.stats.author)
+                            espl_panel.today   = DC.num(result.stats.reports_today)
+                            espl_panel.week    = DC.num(result.stats.reports_week)
+                            espl_panel.all      = DC.num(result.stats.reports_all)
+                            espl_panel.balance  = DC.num(result.stats.balance)
                             espl_panel.loaded   = true
                             espl_panel.error    = ""
                         end
 
                         if result.top3 then
-                            espl_top3 = result.top3
+                            espl_top3 = DC.clean_top3(result.top3)
                         end
                     end
                     local spent_ms = (os.clock() - t0) * 1000
+                    DC.trace(string.format("esp poll: sleeping %.0f ms", math.max(0, 1000 - spent_ms)))
                     if spent_ms < 1000 then wait(1000 - spent_ms) end
+                    DC.trace("esp poll: next iteration")
                 else
                     fail_streak = fail_streak + 1
 
@@ -2508,12 +2657,8 @@ local function espl_truncate_to_width(text, max_width)
 end
 
 imgui.OnFrame(function() return espl_open[0] end, function()
-    if #DC.tex_trash > 0 then
-        for i = #DC.tex_trash, 1, -1 do
-            if imgui.ReleaseTexture then pcall(imgui.ReleaseTexture, DC.tex_trash[i]) end
-            DC.tex_trash[i] = nil
-        end
-    end
+    DC.ftrace("begin")
+    DC.espl_tick()
     imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
     imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 8))
@@ -2634,6 +2779,7 @@ imgui.OnFrame(function() return espl_open[0] end, function()
 
     local grid_locked = espl_loading or (espl_load_error ~= "")
 
+    DC.ftrace("slots begin")
     DC.slots_cache = DC.slots_cache or espl_generate_time_slots()
     local slots     = DC.slots_cache
     local cols      = 8
@@ -2707,6 +2853,7 @@ imgui.OnFrame(function() return espl_open[0] end, function()
             end
 
             local tex, uv0, uv1, _, col32 = DC.icon_params(key)
+            if i == 1 or i == #slots then DC.ftrace("slot " .. i .. " key=" .. tostring(key) .. " booked=" .. tostring(is_booked) .. " past=" .. tostring(is_past) .. " tex=" .. tostring(tex)) end
             if tex then
                 local spec = DC.ICON_SPEC[key]
                 local bx1, by1 = slot_pos.x + slot_w, slot_pos.y + slot_h
@@ -2750,10 +2897,12 @@ imgui.OnFrame(function() return espl_open[0] end, function()
         if i % cols ~= 0 then imgui.SameLine() end
     end
 
+    DC.ftrace("slots done")
     local main_win_pos  = imgui.GetWindowPos()
     local main_win_size = imgui.GetWindowSize()
 
     imgui.End()
+    DC.ftrace("main window done")
 
     local SIDE_GAP = 8
     imgui.SetNextWindowPos(
@@ -2774,6 +2923,7 @@ imgui.OnFrame(function() return espl_open[0] end, function()
         imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoTitleBar +
         imgui.WindowFlags.AlwaysAutoResize + imgui.WindowFlags.NoMove)
 
+    DC.ftrace("side panel")
     local SIDE_W = 180
 
     local avatar_size = 64
@@ -2790,6 +2940,7 @@ imgui.OnFrame(function() return espl_open[0] end, function()
 
     if espl_panel.avatar_tex then
 
+        DC.ftrace("avatar draw tex=" .. tostring(espl_panel.avatar_tex))
         draw_list:AddImageRounded(
             espl_panel.avatar_tex,
             avatar_pos, avatar_p2,
@@ -2835,6 +2986,7 @@ imgui.OnFrame(function() return espl_open[0] end, function()
         imgui.Spacing()
 
         local bal_str = espl_format_balance(espl_panel.balance)
+        DC.ftrace("stats balance=" .. tostring(espl_panel.balance) .. " today=" .. tostring(espl_panel.today) .. " author=" .. tostring(espl_panel.author))
         local bal_color = espl_panel.balance >= 0
             and hexcol(GREEN_BRIGHT)
             or imgui.ImVec4(1, 0.35, 0.35, 1)
@@ -2936,6 +3088,7 @@ imgui.OnFrame(function() return espl_open[0] end, function()
         imgui.WindowFlags.NoMove + imgui.WindowFlags.NoScrollbar +
         imgui.WindowFlags.NoScrollWithMouse)
 
+    DC.ftrace("top3")
     local top3_content_w = imgui.GetContentRegionAvail().x
 
     center_text(u8("Топ за неделю"), hexcol(GREEN_BRIGHT))
@@ -3003,6 +3156,8 @@ imgui.OnFrame(function() return espl_open[0] end, function()
 
     imgui.PopStyleColor(8)
     imgui.PopStyleVar(4)
+    DC.ftrace("end")
+    if (DC.espl_trace_left or 0) > 0 then DC.espl_trace_left = DC.espl_trace_left - 1 end
 end)
 
 imgui.OnFrame(function() return espl_modal_open end, function()
@@ -4543,6 +4698,24 @@ function DC.tp_load()
     end
 end
 
+DC.AUTO_FILE = DATA_DIR .. "auto_mode.txt"
+DC.auto_mode = false   -- /-ehelper: авто-открытие окна при запуске мероприятия
+
+function DC.auto_save()
+    local f = io.open(DC.AUTO_FILE, "w")
+    if not f then return end
+    f:write(DC.auto_mode and "1" or "0")
+    f:close()
+end
+
+function DC.auto_load()
+    local f = io.open(DC.AUTO_FILE, "r")
+    if not f then return end
+    local content = f:read("*a")
+    f:close()
+    DC.auto_mode = tostring(content or ""):find("1", 1, true) ~= nil
+end
+
 function DC.tp_timer_format(remaining)
     if DC.tp_timer.total >= 60 then
         return string.format("%02d:%02d", math.floor(remaining / 60), remaining % 60)
@@ -4614,6 +4787,12 @@ function DC.sampev_onServerMessage(color, text)
     if not nick or not secs then return end
 
     if nick:lower() ~= get_local_nickname():lower() then return end
+
+    -- режим /-ehelper выключен: окно само не открываем
+    if not DC.auto_mode then
+        DC.trace('event started by me, but auto mode (/-ehelper) is off: window not opened')
+        return
+    end
 
     secs = tonumber(secs)
     if not secs then return end
@@ -4732,14 +4911,12 @@ DC.tex_frame = imgui.OnFrame(function()
 end, function()
     DC.tex_dirty = false
 
-    for i = #DC.tex_trash, 1, -1 do
-        if imgui.ReleaseTexture then pcall(imgui.ReleaseTexture, DC.tex_trash[i]) end
-        DC.tex_trash[i] = nil
-    end
+    DC.tex_release()
 
     for key in pairs(DC.ICON_SPEC) do
         if DC.icon_ready[key] and not DC.icon_tex[key] and not DC.icon_failed[key] then
             local path = DC.icon_path(key)
+            DC.trace("tex_frame: creating icon " .. tostring(key))
             local ok, t = pcall(imgui.CreateTextureFromFile, path)
             if ok and t then
                 DC.icon_tex[key] = t
@@ -4751,10 +4928,17 @@ end, function()
     end
 
     if espl_panel.avatar_ready and not espl_panel.avatar_tex then
+        DC.trace("tex_frame: creating avatar texture")
         local ok_tex, tex = pcall(imgui.CreateTextureFromFile, espl_panel.avatar_file)
+        DC.trace("tex_frame: avatar texture ok=" .. tostring(ok_tex) .. " tex=" .. tostring(tex))
         if ok_tex and tex then
             espl_panel.avatar_tex = tex
-            espl_panel.avatar_uv0, espl_panel.avatar_uv1 = DC.cover_uv(espl_panel.avatar_file)
+            local ok_uv, uv0, uv1 = pcall(DC.cover_uv, espl_panel.avatar_file)
+            if ok_uv and uv0 and uv1 then
+                espl_panel.avatar_uv0, espl_panel.avatar_uv1 = uv0, uv1
+            else
+                espl_panel.avatar_uv0, espl_panel.avatar_uv1 = DC.UV0, DC.UV1
+            end
         end
         espl_panel.avatar_ready = false
         if not espl_panel.avatar_tex then
@@ -5187,6 +5371,7 @@ end, function()
 end)
 DC.alert_frame.HideCursor = true
 DC.WINNER_SUM = 50
+DC.test_mode  = false   -- /et: /b instead of /ao, bank amount 1 instead of the real sum
 
 
 DC.winner = {
@@ -5245,7 +5430,7 @@ function DC.winner_submit()
 
     DC.last_winner = { nick = name, title = title_ansi, sum = sum, time = os.time() }
 
-    local AO_FMT = '/ao Победителем мероприятия "%s" стал %s и получает %dКК'
+    local AO_FMT = (DC.test_mode and '/b ' or '/ao ') .. 'Победителем мероприятия "%s" стал %s и получает %dКК'
     local msg = string.format(AO_FMT, title_ansi, name, sum)
     -- SA-MP chat buffer is small: if the line is too long, only the title is shortened
     if #msg > 140 then
@@ -5275,7 +5460,7 @@ function DC.winner_loop()
                     DC.trace('loop: window hidden, waiting')
                     wait(DC.BANK_CMD_DELAY)
                     DC.trace('loop: bank_start')
-                    DC.bank_start(p.name, p.sum * 1000000, p.title)
+                    DC.bank_start(p.name, DC.test_mode and 1 or (p.sum * 1000000), p.title)
                     DC.trace('loop: bank_start done')
                 end)
                 if not ok then
@@ -6680,6 +6865,19 @@ function main()
     end)
 
     sampRegisterChatCommand("esp", function()
+        DC.trace("esp: handler, open=" .. tostring(espl_open[0]))
+        do
+            local okd, dact = pcall(sampIsDialogActive)
+            local okc, cact = pcall(sampIsChatInputActive)
+            DC.trace(string.format("esp: state dialog=%s chat=%s bank=%s tp_visible=%s cursor_unlocked=%s winner_open=%s alerts=%d ethreads=%d lthreads=%d mem=%.0fKB egc=%s",
+                tostring(okd and dact), tostring(okc and cact), tostring(DC.bank.state), tostring(DC.tp_timer.visible),
+                tostring(DC.cursor_unlocked), tostring(DC.winner.open), #DC.alerts, #DC.ethreads, #DC.lthreads, collectgarbage("count"), DC.egc_info()))
+        end
+        if not DC.tp_timer.visible then
+            -- the /ehelper window is closed: make sure it does not keep the cursor / player lock
+            pcall(DC.tp_set_cursor, false)
+            DC.winner.open = false
+        end
         if espl_open[0] then
             espl_open[0]    = false
             espl_modal_open = false
@@ -6699,9 +6897,7 @@ function main()
             espl_panel.avatar_ready = false
             espl_panel.avatar_tries = 0
         end
-        espl_author_resolved    = false
-
-        resolve_espl_author()
+        resolve_espl_author()   -- no forced re-check: it would start one more parallel effil thread
 
         DC.color_open      = false
         espl_dates         = espl_get_date_range()
@@ -6710,9 +6906,12 @@ function main()
         espl_top3            = {}
         espl_loading        = true
         espl_load_error      = ""
-        espl_open[0]        = true
+        espl_open[0] = true
+        DC.espl_trace_left = 6
+        DC.trace("esp: window opened")
 
         DC.esp_start_polling(espl_selected_date)
+        DC.trace("esp: polling started")
     end)
 
     do
@@ -6737,6 +6936,7 @@ function main()
     end
 
     DC.tp_load()
+    DC.auto_load()
     DC.key_load()
     DC.pos_load()
     DC.hp_start_loop()
@@ -6745,6 +6945,7 @@ function main()
     DC.scan_prompt_loop()
     DC.winner_loop()
     DC.heartbeat_start()
+    DC.effil_gc_loop()
     DC.session_start()
 
     DC.raw_register("ehelper", function(params)
@@ -6762,8 +6963,29 @@ function main()
         DC.tp_set_visible(not DC.tp_timer.visible)
     end)
 
+    sampRegisterChatCommand("-ehelper", function()
+        DC.auto_mode = not DC.auto_mode
+        DC.auto_save()
+        DC.trace("auto mode = " .. tostring(DC.auto_mode))
+        if DC.auto_mode then
+            es_msg("Авто-режим {FFFF00}ВКЛЮЧЁН{FFFFFF}: окно помощника будет открываться при запуске мероприятия.")
+        else
+            es_msg("Авто-режим {FFFF00}ВЫКЛЮЧЕН{FFFFFF}: окно само не открывается, отчёты через {FFFF00}/es{FFFFFF}, {FFFF00}/ess{FFFFFF}. Открыть окно вручную: {FFFF00}/ehelper{FFFFFF}.")
+        end
+    end)
+
     sampRegisterChatCommand("esc", function()
         DC.session_reset()
+    end)
+
+    sampRegisterChatCommand("et", function()
+        DC.test_mode = not DC.test_mode
+        DC.trace("test mode = " .. tostring(DC.test_mode))
+        if DC.test_mode then
+            es_msg("Тестовый режим {FFFF00}ВКЛЮЧЁН{FFFFFF}: вместо /ao пишется /b, в банк уходит {FFFF00}1${FFFFFF}.", "FFAA00")
+        else
+            es_msg("Тестовый режим {FFFF00}ВЫКЛЮЧЕН{FFFFFF}: /ao и полная сумма награды.")
+        end
     end)
 
     sampRegisterChatCommand("esreset", function()
