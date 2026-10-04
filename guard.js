@@ -6,7 +6,7 @@
   var WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
   // Публичный ключ виджета Turnstile. Тестовый ключ ниже всегда пропускает —
   // замените на свой из панели Cloudflare (Turnstile → Add widget).
-  var SITE_KEY = "1x00000000000000000000AA";
+  var SITE_KEY = "0x4AAAAAAFNw2v5BkvIQlJNK";
 
   var pending = null;
   var scriptPromise = null;
