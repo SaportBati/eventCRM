@@ -10,10 +10,32 @@
   /* алиасы для совместимости с inline-стилями */
   --text:var(--ink); --text-dim:var(--ink-2); --text-faint:var(--ink-3);
   --border:var(--ink); --border-dim:var(--hair);
+  --chart-grid:rgba(22,21,15,.09);
+  --on-ink-dim:#b9b3a1; --on-ink-red:#f0a090;
+  --lead-bg:#16150f; --lead-fg:#f5f2ea; --lead-dim:#a9a392; --lead-track:#3a382f; --lead-hit:#e0553a; --lead-neg:#f0a090; --lead-pos:#7fd1b0;
+  color-scheme:light;
   --serif:'Spectral',Georgia,serif;
   --sans:'IBM Plex Sans',system-ui,sans-serif;
   --mono:'IBM Plex Mono',ui-monospace,monospace;
 }
+:root[data-theme="dark"]{
+  --paper:#141310; --paper-2:#1c1a16; --paper-3:#26241e;
+  --ink:#ece8df; --ink-2:#b5af9f; --ink-3:#8a8472;
+  --hair:#3a372e; --red:#e0553a; --red-2:#c8381f; --green:#4fae8c;
+  --chart-grid:rgba(236,232,223,.09);
+  --on-ink-dim:#6b665a; --on-ink-red:#c8381f;
+  --lead-bg:#2b2923; --lead-fg:#f2eee4; --lead-dim:#a9a392; --lead-track:#4a473d; --lead-hit:#e0553a; --lead-neg:#f0a090; --lead-pos:#7fd1b0;
+  color-scheme:dark;
+}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#141310; --paper-2:#1c1a16; --paper-3:#26241e;
+  --ink:#ece8df; --ink-2:#b5af9f; --ink-3:#8a8472;
+  --hair:#3a372e; --red:#e0553a; --red-2:#c8381f; --green:#4fae8c;
+  --chart-grid:rgba(236,232,223,.09);
+  --on-ink-dim:#6b665a; --on-ink-red:#c8381f;
+  --lead-bg:#2b2923; --lead-fg:#f2eee4; --lead-dim:#a9a392; --lead-track:#4a473d; --lead-hit:#e0553a; --lead-neg:#f0a090; --lead-pos:#7fd1b0;
+  color-scheme:dark;
+}}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
 body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.5;min-height:100vh;overflow-x:hidden}
@@ -238,7 +260,7 @@ button.btn:disabled{opacity:.4;cursor:default}
 .date-tab.active{background:var(--ink);color:var(--paper-2)}
 .date-tab .dow{font-family:var(--mono);font-size:9.5px;letter-spacing:1.2px;text-transform:uppercase;color:var(--ink-3)}
 .date-tab.today .dow{color:var(--red);font-weight:600}
-.date-tab.active .dow{color:#b9b3a1}.date-tab.active.today .dow{color:#f0a090}
+.date-tab.active .dow{color:var(--on-ink-dim)}.date-tab.active.today .dow{color:var(--on-ink-red)}
 .date-tab .dnum{font-family:var(--serif);font-size:18px;font-weight:700;margin-top:2px}
 .plan-grid{display:grid;grid-template-columns:repeat(8,1fr);gap:0;border-top:2px solid var(--ink);border-left:1px solid var(--ink);transition:opacity .2s}
 @media(max-width:900px){.plan-grid{grid-template-columns:repeat(4,1fr)}}
@@ -271,3 +293,23 @@ button.btn:disabled{opacity:.4;cursor:default}
 .btn-cancel:hover{background:var(--paper-3)}
 .btn-delete{background:var(--paper-2);color:var(--red)}
 .btn-delete:hover{background:var(--red);color:var(--paper-2)}
+
+/* ---------- leader card (theme-aware) ---------- */
+.author-card.leader{background:var(--lead-bg);color:var(--lead-fg)}
+.author-card.leader .author-sub,.author-card.leader .meta-row{color:var(--lead-dim)}
+.author-card.leader .meta-row b,.author-card.leader .seal-ring-num{color:var(--lead-fg)}
+.author-card.leader .seal-ring .track{stroke:var(--lead-track)}
+.author-card.leader .leader-tag{color:var(--lead-neg)}
+.author-card.leader .week-strip .bar{background:var(--lead-track)}
+.author-card.leader .week-strip .bar.hit{background:var(--lead-hit)}
+.author-card.leader .week-strip .bar.today{outline-color:var(--lead-fg)}
+.author-card.leader .balance-pos{color:var(--lead-pos)!important}
+.author-card.leader .balance-neg{color:var(--lead-neg)!important}
+.brand-mark{color:var(--ink)}
+.lightbox img{border-color:var(--paper-2)}
+
+/* ---------- theme toggle ---------- */
+.theme-toggle{position:fixed;right:20px;bottom:20px;z-index:2500;width:44px;height:44px;display:flex;align-items:center;justify-content:center;background:var(--paper-2);color:var(--ink);border:1px solid var(--ink);box-shadow:3px 3px 0 var(--ink);cursor:pointer;transition:transform .12s,box-shadow .12s,color .12s}
+.theme-toggle:hover{transform:translate(-2px,-2px);box-shadow:5px 5px 0 var(--ink);color:var(--red)}
+.theme-toggle:active{transform:none;box-shadow:1px 1px 0 var(--ink)}
+body,header,.glass,.panel,.time-slot,.table-scroll,.input-modal{transition:background-color .2s,border-color .2s,color .2s}
