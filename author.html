@@ -254,7 +254,8 @@
       }
 
       function showAuthRequired() {
-        document.body.innerHTML = `<div class="auth-wrap"><div class="auth-card"><svg class="auth-ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="square"><rect x="3.5" y="7" width="9" height="6.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg><h1>Требуется авторизация</h1><p>Для доступа необходимо авторизоваться через скрипт.<br><br>Используйте команду <code>/esr</code> в игре.</p><div class="auth-note"><strong>Как это работает</strong>Команда /esr автоматически откроет браузер с вашим профилем. После первого входа вы будете авторизованы постоянно.</div></div></div>`;
+        const page = location.pathname.split('/').pop() || 'index.html';
+        location.replace('login.html?next=' + encodeURIComponent(page));
       }
 
       // Проверяем авторизацию при загрузке
