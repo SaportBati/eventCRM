@@ -68,6 +68,7 @@
     </div>
   </div>
 
+  <script src="guard.js"></script>
   <script>
     (async function () {
       const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
@@ -587,7 +588,7 @@
             body.author = selectedAuthor;
           }
 
-          const resp = await fetch(WORKER_URL + '/plan', {
+          const resp = await guardedFetch(WORKER_URL + '/plan', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -616,7 +617,7 @@
 
         setModalBusy(true);
         try {
-          const resp = await fetch(WORKER_URL + '/plan/delete', {
+          const resp = await guardedFetch(WORKER_URL + '/plan/delete', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',

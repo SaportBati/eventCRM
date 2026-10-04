@@ -94,6 +94,7 @@
     </div>
   </main>
 
+  <script src="guard.js"></script>
   <script>
     (async function () {
       const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
@@ -268,7 +269,7 @@
         f.status = 'uploading'; f.error = null; renderThumbs();
         try {
           const b64 = await fileToBase64(f.file);
-          const resp = await fetch(WORKER_URL + '/upload-image', {
+          const resp = await guardedFetch(WORKER_URL + '/upload-image', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-HWID': currentHwid },
             body: JSON.stringify({ data: b64 })
@@ -342,7 +343,7 @@
             scans: files.map(f => ({ time: dt.clock, url: f.url }))
           };
 
-          const resp = await fetch(WORKER_URL + '/report', {
+          const resp = await guardedFetch(WORKER_URL + '/report', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-HWID': currentHwid },
             body: JSON.stringify(payload)
