@@ -1,1019 +1,676 @@
 <!DOCTYPE html>
 <html lang="ru">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Планировщик · Arizona Event CRM</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css">
-<style>
-  .plan-grid {
-    display: grid;
-    grid-template-columns: repeat(8, 1fr);
-    gap: 12px;
-    padding: 24px;
-    max-width: 1400px;
-    margin: 0 auto;
-    transition: opacity 0.2s ease;
-  }
-  @media (max-width: 900px){
-    .plan-grid{ grid-template-columns: repeat(4, 1fr); }
-  }
-  @media (max-width: 560px){
-    .plan-grid{ grid-template-columns: repeat(2, 1fr); }
-  }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Планировщик · Arizona Event CRM</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Spectral:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  </head>
 
-  /* ---------- date tabs ---------- */
-  .date-tabs {
-    display: flex;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding: 0 24px 22px;
-    max-width: 1400px;
-    margin: 0 auto;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: thin;
-  }
-  .date-tab {
-    flex: 0 0 auto;
-    min-width: 72px;
-    background: rgba(26, 31, 46, 0.6);
-    border: 2px solid rgba(79, 195, 176, 0.2);
-    border-radius: 10px;
-    padding: 10px 14px;
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.25s ease;
-    user-select: none;
-  }
-  .date-tab:hover {
-    border-color: #4fc3b0;
-    background: rgba(79, 195, 176, 0.1);
-  }
-  .date-tab.active {
-    border-color: #4fc3b0;
-    background: rgba(79, 195, 176, 0.22);
-    box-shadow: 0 0 15px rgba(79, 195, 176, 0.35);
-  }
-  .date-tab .dow {
-    font-size: 10.5px;
-    color: #929aab;
-    text-transform: uppercase;
-    letter-spacing: .5px;
-    font-family: 'Inter', sans-serif;
-    font-weight: 600;
-  }
-  .date-tab.active .dow { color: #8ce9d7; }
-  .date-tab.today .dow { color: #d4a24e; }
-  .date-tab.active.today .dow { color: #8ce9d7; }
-  .date-tab .dnum {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 15px;
-    font-weight: 600;
-    color: #ece7da;
-    margin-top: 3px;
-  }
-
-  .time-slot {
-    background: rgba(26, 31, 46, 0.6);
-    border: 2px solid rgba(79, 195, 176, 0.2);
-    border-radius: 12px;
-    padding: 16px 12px;
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    position: relative;
-    backdrop-filter: blur(10px);
-  }
-
-  .time-slot:hover {
-    border-color: #4fc3b0;
-    background: rgba(79, 195, 176, 0.1);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 20px rgba(79, 195, 176, 0.3);
-  }
-
-  /* Цвет автора (--ac-*) выставляется инлайново в JS для каждого забро-
-     нированного слота — так у разных пользователей брони визуально
-     различаются. Фолбэк на исходный teal/gold остаётся на случай, если
-     переменная почему-то не проставлена. */
-  .time-slot.booked {
-    background: var(--ac-bg, rgba(79, 195, 176, 0.15));
-    border-color: var(--ac-solid, #4fc3b0);
-    box-shadow: 0 0 15px var(--ac-shadow, rgba(79, 195, 176, 0.4));
-  }
-
-  .time-slot.booked:hover {
-    background: var(--ac-bg-hover, rgba(79, 195, 176, 0.25));
-  }
-
-  /* Прошедшие слоты — визуально притушены, чтобы было интуитивно
-     понятно, что они недоступны для действий. Свободные прошедшие
-     слоты полностью некликабельны (обработчик клика не вешается);
-     занятые прошедшие можно только посмотреть, но не редактировать. */
-  .time-slot.past {
-    opacity: 0.38;
-    cursor: default;
-  }
-  .time-slot.past:hover {
-    transform: none;
-    box-shadow: none;
-    border-color: rgba(79, 195, 176, 0.2);
-    background: rgba(26, 31, 46, 0.6);
-  }
-  .time-slot.booked.past {
-    opacity: 0.55;
-    cursor: pointer;
-  }
-  .time-slot.booked.past:hover {
-    background: var(--ac-bg, rgba(79, 195, 176, 0.2));
-    transform: none;
-    box-shadow: none;
-  }
-
-  .time-code {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 18px;
-    font-weight: 600;
-    color: #4fc3b0;
-    margin-bottom: 8px;
-  }
-
-  .time-slot.booked .time-code {
-    color: var(--ac-light, #8ce9d7);
-  }
-
-  .slot-label {
-    font-size: 12px;
-    color: #929aab;
-    margin-top: 4px;
-  }
-
-  .slot-owner {
-    margin-top: 6px;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--ac-solid, #d4a24e);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
-  }
-
-  .slot-owner-title {
-    margin-top: 2px;
-    font-size: 10.5px;
-    color: #929aab;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
-  }
-
-  .input-modal {
-    display: none;
-    position: fixed;
-    background: rgba(10, 14, 20, 0.95);
-    border: 2px solid #4fc3b0;
-    border-radius: 12px;
-    padding: 24px;
-    min-width: 320px;
-    z-index: 2000;
-    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.8);
-    backdrop-filter: blur(10px);
-  }
-
-  .input-modal.show {
-    display: block;
-  }
-
-  .input-modal-header {
-    font-family: 'Cinzel', serif;
-    font-size: 18px;
-    color: #4fc3b0;
-    margin-bottom: 16px;
-  }
-
-  .input-modal input {
-    width: 100%;
-    background: rgba(26, 31, 46, 0.8);
-    border: 1px solid rgba(79, 195, 176, 0.3);
-    border-radius: 8px;
-    padding: 12px;
-    color: #ece7da;
-    font-family: 'Inter', sans-serif;
-    font-size: 14px;
-    margin-bottom: 16px;
-  }
-
-  .input-modal input:focus {
-    outline: none;
-    border-color: #4fc3b0;
-    box-shadow: 0 0 0 3px rgba(79, 195, 176, 0.1);
-  }
-
-  .input-modal select {
-    width: 100%;
-    background: rgba(26, 31, 46, 0.8);
-    border: 1px solid rgba(79, 195, 176, 0.3);
-    border-radius: 8px;
-    padding: 12px;
-    color: #ece7da;
-    font-family: 'Inter', sans-serif;
-    font-size: 14px;
-    margin-bottom: 16px;
-    cursor: pointer;
-  }
-
-  .input-modal select:focus {
-    outline: none;
-    border-color: #4fc3b0;
-    box-shadow: 0 0 0 3px rgba(79, 195, 176, 0.1);
-  }
-
-  .input-modal select option {
-    background: #1a1f2e;
-    color: #ece7da;
-  }
-
-  .input-modal-buttons {
-    display: flex;
-    gap: 12px;
-    justify-content: flex-end;
-  }
-
-  .input-modal-buttons button {
-    padding: 10px 20px;
-    border: none;
-    border-radius: 8px;
-    font-family: 'Inter', sans-serif;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s ease;
-  }
-
-  .input-modal-buttons button:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-
-  .btn-save {
-    background: #4fc3b0;
-    color: #0a0e14;
-  }
-
-  .btn-save:hover {
-    background: #8ce9d7;
-    transform: translateY(-1px);
-  }
-
-  .btn-cancel {
-    background: rgba(146, 154, 171, 0.2);
-    color: #c8cdd8;
-  }
-
-  .btn-cancel:hover {
-    background: rgba(146, 154, 171, 0.3);
-  }
-
-  .btn-delete {
-    background: rgba(220, 38, 38, 0.2);
-    color: #fca5a5;
-  }
-
-  .btn-delete:hover {
-    background: rgba(220, 38, 38, 0.3);
-  }
-
-  .plan-header {
-    text-align: center;
-    padding: 40px 20px 20px;
-  }
-
-  .plan-title {
-    font-family: 'Cinzel', serif;
-    font-size: 42px;
-    color: #4fc3b0;
-    margin-bottom: 12px;
-  }
-
-  .plan-subtitle {
-    font-size: 16px;
-    color: #929aab;
-  }
-</style>
-</head>
 <body>
 
-<div class="hero-bg hero-bg-blurred" id="heroBg" aria-hidden="true"></div>
-<div class="aurora" aria-hidden="true"><span class="b1"></span><span class="b2"></span><span class="b3"></span></div>
-
-<header>
-  <div class="brand">
-    <div class="brand-copy">
-      <h1 id="brandTitle">Arizona Event CRM</h1>
-      <div class="subtitle" id="brandSub">Планировщик событий</div>
-    </div>
-  </div>
-
-  <div class="nav-tabs-wrap">
-    <nav class="nav-tabs">
-      <a href="index.html">Дашборд</a>
-      <a href="author.html">Авторы</a>
-    </nav>
-    <nav class="nav-tabs nav-tabs-secondary">
-      <a href="plan.html" class="active">Планировщик</a>
-      <a href="report.html">Отчёт</a>
-    </nav>
-  </div>
-</header>
-
-<main style="opacity:1; transform:none;">
-  <div id="gateErrorWrap"></div>
-  <div class="loading" id="loadingState">
-    <div class="spinner"></div>
-    Загружаем планировщик…
-  </div>
-
-  <div id="app" style="display: none;">
-    <div class="plan-header">
-      <h2 class="plan-title">Планировщик событий</h2>
-    </div>
-
-    <div class="date-tabs" id="dateTabs"></div>
-
-    <div class="plan-grid" id="planGrid"></div>
-  </div>
-</main>
-
-<div class="input-modal" id="inputModal">
-  <div class="input-modal-header" id="modalHeader">Забронировать время</div>
-  <div id="modalViewInfo" style="display:none; margin-bottom:16px; font-size:14px; color:#c8cdd8; line-height:1.7;"></div>
-  <select id="eventAuthor" style="display:none; width:100%; background:rgba(26,31,46,0.8); border:1px solid rgba(79,195,176,0.3); border-radius:8px; padding:12px; color:#ece7da; font-family:'Inter',sans-serif; font-size:14px; margin-bottom:16px;">
-    <option value="">Выберите автора</option>
-  </select>
-  <input type="text" id="eventTitle" placeholder="Название мероприятия" maxlength="100">
-  <div class="input-modal-buttons">
-    <button class="btn-delete" id="btnDelete" style="display: none;">Удалить</button>
-    <button class="btn-cancel" id="btnCancel">Отмена</button>
-    <button class="btn-save" id="btnSave">Сохранить</button>
-  </div>
-</div>
-
-<script>
-(async function(){
-  const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
-  const $ = (id) => document.getElementById(id);
-
-  // Заполняются после успешной авторизации: HWID нужен на каждый запрос
-  // к /plan (сервер сверяет его с whitelist), а автора сервер сам
-  // подставляет по HWID — клиент не может задать чужое имя.
-  let currentHwid = null;
-  let currentAuthor = 'Аноним';
-  let isAdmin = false;
-  let allUsers = []; // Список всех пользователей для админа
-
-  // ============== ЦВЕТА АВТОРОВ (полностью на клиенте, без воркера) ==============
-  // Каждому автору один раз назначается случайный цвет (только оттенок —
-  // насыщенность и яркость зафиксированы в "сочной" средней зоне, поэтому
-  // чёрный/белый в принципе не могут получиться). Новый оттенок подбирается
-  // так, чтобы быть подальше по кругу от уже занятых — чтобы соседние брони
-  // не сливались в почти одинаковый цвет. Результат сохраняется в
-  // localStorage, так что при следующем визите цвета не "прыгают" и заново
-  // не генерируются.
-  const AUTHOR_COLORS_KEY = 'plan_author_colors_v1';
-  const COLOR_SATURATION = 68; // %, фиксированная — подальше от серого/белого
-  const COLOR_LIGHTNESS = 56;  // %, средняя зона — подальше от чёрного/белого
-  const MIN_HUE_DISTANCE = 28; // градусов между соседними оттенками
-  const HUE_PICK_ATTEMPTS = 60;
-
-  function loadAuthorColors() {
-    try {
-      const raw = localStorage.getItem(AUTHOR_COLORS_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      return (parsed && typeof parsed === 'object') ? parsed : {};
-    } catch (e) {
-      return {};
-    }
-  }
-
-  function saveAuthorColors(map) {
-    try {
-      localStorage.setItem(AUTHOR_COLORS_KEY, JSON.stringify(map));
-    } catch (e) {
-      console.error('[Colors] Failed to save author colors:', e);
-    }
-  }
-
-  let authorColorMap = loadAuthorColors();
-
-  function circularHueDistance(a, b) {
-    const d = Math.abs(a - b) % 360;
-    return d > 180 ? 360 - d : d;
-  }
-
-  function pickHueFarFromExisting(existingHues) {
-    for (let i = 0; i < HUE_PICK_ATTEMPTS; i++) {
-      const candidate = Math.floor(Math.random() * 360);
-      if (existingHues.every(h => circularHueDistance(candidate, h) >= MIN_HUE_DISTANCE)) {
-        return candidate;
-      }
-    }
-    // Не удалось за отведённое число попыток найти оттенок с достаточным
-    // отступом (например, уже занято очень много цветов) — берём тот,
-    // что максимально далёк от всех существующих, чтобы разница всё
-    // равно была наибольшей из возможных.
-    let best = Math.floor(Math.random() * 360);
-    let bestMinDist = -1;
-    for (let candidate = 0; candidate < 360; candidate += 2) {
-      const minDist = existingHues.length
-        ? Math.min(...existingHues.map(h => circularHueDistance(candidate, h)))
-        : 360;
-      if (minDist > bestMinDist) {
-        bestMinDist = minDist;
-        best = candidate;
-      }
-    }
-    return best;
-  }
-
-  function buildColorSet(hue) {
-    const lightAccent = Math.min(COLOR_LIGHTNESS + 18, 82);
-    return {
-      solid: `hsl(${hue}, ${COLOR_SATURATION}%, ${COLOR_LIGHTNESS}%)`,
-      light: `hsl(${hue}, ${COLOR_SATURATION}%, ${lightAccent}%)`,
-      bg: `hsla(${hue}, ${COLOR_SATURATION}%, ${COLOR_LIGHTNESS}%, 0.15)`,
-      bgHover: `hsla(${hue}, ${COLOR_SATURATION}%, ${COLOR_LIGHTNESS}%, 0.25)`,
-      shadow: `hsla(${hue}, ${COLOR_SATURATION}%, ${COLOR_LIGHTNESS}%, 0.4)`
-    };
-  }
-
-  function getAuthorColorSet(name) {
-    const key = (name && String(name).trim()) || '—';
-    let entry = authorColorMap[key];
-    if (!entry || typeof entry.h !== 'number') {
-      const existingHues = Object.values(authorColorMap)
-        .map(c => c && c.h)
-        .filter(h => typeof h === 'number');
-      const hue = pickHueFarFromExisting(existingHues);
-      entry = { h: hue };
-      authorColorMap[key] = entry;
-      saveAuthorColors(authorColorMap);
-    }
-    return buildColorSet(entry.h);
-  }
-
-  function authorColorStyleAttr(name) {
-    const c = getAuthorColorSet(name);
-    return ` style="--ac-solid:${c.solid}; --ac-light:${c.light}; --ac-bg:${c.bg}; --ac-bg-hover:${c.bgHover}; --ac-shadow:${c.shadow};"`;
-  }
-
-  // ============== АВТОРИЗАЦИЯ ЧЕРЕЗ ОДНОРАЗОВЫЙ ТОКЕН ==============
-  // /esr в игре больше не кладёт голый HWID в URL (он был бы фактически
-  // вечным ключом, если кто-то увидит ссылку в истории браузера/логах).
-  // Вместо этого воркер выдаёт одноразовый токен, живущий максимум 1
-  // минуту (см. /gen-token в worker.js). Мы обмениваем его на HWID через
-  // /check-token один раз, а сам HWID уже сохраняем в localStorage —
-  // именно поэтому повторные заходы на сайт (без /esr) продолжают
-  // работать как раньше, через сохранённый HWID.
-  function getTokenFromUrl() {
-    const hash = window.location.hash;
-    const match = hash.match(/&token=([^&/#]+)/);
-    return match ? decodeURIComponent(match[1]) : null;
-  }
-
-  function cleanTokenFromUrl() {
-    const hash = window.location.hash;
-    if (hash.includes('&token=')) {
-      const cleanHash = hash.replace(/&token=[^&/#]+/, '');
-      window.history.replaceState(null, '', cleanHash || '#/');
-    }
-  }
-
-  // Одноразовый обмен: токен -> HWID. Токен гасится на сервере при первом
-  // же успешном (или неуспешном, но валидном) обращении, поэтому повторно
-  // им воспользоваться нельзя, даже если ссылка куда-то "утекла".
-  async function exchangeTokenForHwid(token) {
-    try {
-      const resp = await fetch(WORKER_URL + '/check-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token })
-      });
-      if (!resp.ok) return null;
-      const data = await resp.json();
-      return (data && data.ok && data.hwid) ? data.hwid : null;
-    } catch (e) {
-      console.error('[Auth] Token exchange failed:', e);
-      return null;
-    }
-  }
-
-  async function checkHwidServer(hwid) {
-    try {
-      const resp = await fetch(WORKER_URL + '/check-hwid', {
-        headers: { 'X-HWID': hwid }
-      });
-      if (!resp.ok) return { allowed: false, author: null, isAdmin: false };
-      const data = await resp.json();
-      return {
-        allowed: Boolean(data && data.ok && data.allowed),
-        author: (data && data.author) || null,
-        isAdmin: Boolean(data && data.is_admin)
-      };
-    } catch (e) {
-      console.error('[Auth] HWID check failed:', e);
-      return { allowed: false, author: null, isAdmin: false };
-    }
-  }
-
-  async function isAuthorized() {
-    // Если в URL есть одноразовый токен от /esr — обмениваем его на HWID.
-    const tokenFromUrl = getTokenFromUrl();
-    if (tokenFromUrl) {
-      const hwid = await exchangeTokenForHwid(tokenFromUrl);
-
-      // ВСЕГДА удаляем токен из URL (даже при неудачном обмене) — он
-      // одноразовый и хранить его дальше в адресной строке незачем.
-      cleanTokenFromUrl();
-
-      if (!hwid) {
-        localStorage.removeItem('authorized_hwid');
-        return false;
-      }
-
-      const result = await checkHwidServer(hwid);
-      if (!result.allowed) {
-        localStorage.removeItem('authorized_hwid');
-        return false;
-      }
-      localStorage.setItem('authorized_hwid', hwid);
-      currentHwid = hwid;
-      currentAuthor = result.author || 'Аноним';
-      isAdmin = result.isAdmin || false;
-      localStorage.setItem('user_name', currentAuthor);
-      
-      // Загружаем список пользователей если это админ
-      if (isAdmin) {
-        await loadUsers();
-      }
-      
-      return true;
-    }
-
-    // Токена в URL нет — проверяем сохранённый HWID (это путь, по
-    // которому сайт продолжает работать при обычных повторных заходах,
-    // без /esr).
-    const savedHwid = localStorage.getItem('authorized_hwid');
-    if (savedHwid) {
-      const result = await checkHwidServer(savedHwid);
-      if (!result.allowed) {
-        localStorage.removeItem('authorized_hwid');
-        return false;
-      }
-      currentHwid = savedHwid;
-      currentAuthor = result.author || 'Аноним';
-      isAdmin = result.isAdmin || false;
-      localStorage.setItem('user_name', currentAuthor);
-      
-      // Загружаем список пользователей если это админ
-      if (isAdmin) {
-        await loadUsers();
-      }
-      
-      return true;
-    }
-
-    return false;
-  }
-
-  function showAuthRequired() {
-    document.body.innerHTML = `
-      <div style="
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        min-height: 100vh;
-        background: linear-gradient(135deg, #0a0e14 0%, #1a1f2e 100%);
-        color: #ece7da;
-        font-family: 'Inter', sans-serif;
-        text-align: center;
-        padding: 20px;
-      ">
-        <div style="
-          background: rgba(26, 31, 46, 0.8);
-          border: 2px solid #4fc3b0;
-          border-radius: 16px;
-          padding: 40px;
-          max-width: 500px;
-          box-shadow: 0 8px 32px rgba(79, 195, 176, 0.2);
-        ">
-          <h1 style="
-            font-family: 'Cinzel', serif;
-            font-size: 32px;
-            margin-bottom: 20px;
-            color: #4fc3b0;
-          ">🔒 Требуется авторизация</h1>
-          <p style="
-            font-size: 16px;
-            line-height: 1.6;
-            margin-bottom: 30px;
-            color: #c8cdd8;
-          ">
-            Для доступа к планировщику необходимо авторизоваться.<br><br>
-            Используйте команду <code style="
-              background: #0a0e14;
-              padding: 4px 8px;
-              border-radius: 4px;
-              color: #4fc3b0;
-              font-family: 'JetBrains Mono', monospace;
-            ">/esr</code> в игре.
-          </p>
-        </div>
+  <header>
+    <div class="brand"><svg class="brand-mark" viewBox="0 0 30 30" fill="none"><rect x="1.5" y="1.5" width="27" height="27" stroke="#16150f" stroke-width="2"/><path d="M1.5 28.5L28.5 1.5" stroke="#16150f" stroke-width="2"/><circle cx="21" cy="21" r="4.5" fill="#c8381f"/></svg><div class="brand-copy">
+        <h1 id="brandTitle">Arizona Event CRM</h1>
+        <div class="subtitle" id="brandSub">Планировщик событий</div>
       </div>
-    `;
-  }
+    </div>
 
-  // Загрузка списка всех пользователей (только для админа)
-  async function loadUsers() {
-    try {
-      const resp = await fetch(WORKER_URL + '/users', {
-        headers: { 'X-HWID': currentHwid }
-      });
-      if (!resp.ok) return;
-      const data = await resp.json();
-      if (data.ok && Array.isArray(data.users)) {
-        allUsers = data.users;
+    <div class="nav-tabs-wrap">
+      <nav class="nav-tabs">
+        <a href="index.html">Дашборд</a>
+        <a href="author.html">Авторы</a>
+      </nav>
+      <nav class="nav-tabs nav-tabs-secondary">
+        <a href="plan.html" class="active">Планировщик</a>
+        <a href="report.html">Отчёт</a>
+      </nav>
+    </div>
+  </header>
+
+  <main style="opacity:1; transform:none;">
+    <div id="gateErrorWrap"></div>
+    <div class="loading" id="loadingState">
+      <div class="spinner"></div>
+      Загружаем планировщик…
+    </div>
+
+    <div id="app" style="display: none;">
+      <div class="plan-header">
+        <h2 class="plan-title">Планировщик событий</h2>
+      </div>
+
+      <div class="date-tabs" id="dateTabs"></div>
+
+      <div class="plan-grid" id="planGrid"></div>
+    </div>
+  </main>
+
+  <div class="input-modal" id="inputModal">
+    <div class="input-modal-header" id="modalHeader">Забронировать время</div>
+    <div id="modalViewInfo" style="display:none;">
+    </div>
+    <select id="eventAuthor" style="display:none;">
+      <option value="">Выберите автора</option>
+    </select>
+    <input type="text" id="eventTitle" placeholder="Название мероприятия" maxlength="100">
+    <div class="input-modal-buttons">
+      <button class="btn-delete" id="btnDelete" style="display: none;">Удалить</button>
+      <button class="btn-cancel" id="btnCancel">Отмена</button>
+      <button class="btn-save" id="btnSave">Сохранить</button>
+    </div>
+  </div>
+
+  <script>
+    (async function () {
+      const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
+      const $ = (id) => document.getElementById(id);
+
+      // Заполняются после успешной авторизации: HWID нужен на каждый запрос
+      // к /plan (сервер сверяет его с whitelist), а автора сервер сам
+      // подставляет по HWID — клиент не может задать чужое имя.
+      let currentHwid = null;
+      let currentAuthor = 'Аноним';
+      let isAdmin = false;
+      let allUsers = []; // Список всех пользователей для админа
+
+      // ============== ЦВЕТА АВТОРОВ (полностью на клиенте, без воркера) ==============
+      // Каждому автору один раз назначается случайный цвет (только оттенок —
+      // насыщенность и яркость зафиксированы в "сочной" средней зоне, поэтому
+      // чёрный/белый в принципе не могут получиться). Новый оттенок подбирается
+      // так, чтобы быть подальше по кругу от уже занятых — чтобы соседние брони
+      // не сливались в почти одинаковый цвет. Результат сохраняется в
+      // localStorage, так что при следующем визите цвета не "прыгают" и заново
+      // не генерируются.
+      const AUTHOR_COLORS_KEY = 'plan_author_colors_v1';
+      const COLOR_SATURATION = 68; // %, фиксированная — подальше от серого/белого
+      const COLOR_LIGHTNESS = 38;  // %, средняя зона — подальше от чёрного/белого
+      const MIN_HUE_DISTANCE = 28; // градусов между соседними оттенками
+      const HUE_PICK_ATTEMPTS = 60;
+
+      function loadAuthorColors() {
+        try {
+          const raw = localStorage.getItem(AUTHOR_COLORS_KEY);
+          const parsed = raw ? JSON.parse(raw) : {};
+          return (parsed && typeof parsed === 'object') ? parsed : {};
+        } catch (e) {
+          return {};
+        }
       }
-    } catch (e) {
-      console.error('Failed to load users:', e);
-    }
-  }
 
-  if (!(await isAuthorized())) {
-    showAuthRequired();
-    return;
-  }
+      function saveAuthorColors(map) {
+        try {
+          localStorage.setItem(AUTHOR_COLORS_KEY, JSON.stringify(map));
+        } catch (e) {
+          console.error('[Colors] Failed to save author colors:', e);
+        }
+      }
 
-  // ============== ВРЕМЯ: ВСЕГДА МСК, НЕЗАВИСИМО ОТ ЧАСОВОГО ПОЯСА УСТРОЙСТВА ==============
-  // МСК — это UTC+3 круглый год (в России нет перехода на летнее время),
-  // поэтому смещение фиксированное. Мы не полагаемся на локальные getters
-  // (getFullYear/getHours/...), так как они возвращают время часового
-  // пояса ПК пользователя. Вместо этого берём "сырые" миллисекунды epoch
-  // (они не зависят от часового пояса), прибавляем 3 часа и дальше везде
-  // читаем через getUTC*-методы — это даёт стабильную "московскую" дату
-  // и время на любом устройстве.
-  const MSK_OFFSET_MS = 3 * 60 * 60 * 1000;
+      let authorColorMap = loadAuthorColors();
 
-  function getMskNow() {
-    return new Date(Date.now() + MSK_OFFSET_MS);
-  }
+      function circularHueDistance(a, b) {
+        const d = Math.abs(a - b) % 360;
+        return d > 180 ? 360 - d : d;
+      }
 
-  // ============== ДАТЫ (5 дней назад + сегодня + 3 дня вперёд = 9) ==============
-  function fmtDateStr(d) {
-    const y = d.getUTCFullYear(), m = String(d.getUTCMonth() + 1).padStart(2, '0'), day = String(d.getUTCDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-  }
+      function pickHueFarFromExisting(existingHues) {
+        for (let i = 0; i < HUE_PICK_ATTEMPTS; i++) {
+          const candidate = Math.floor(Math.random() * 360);
+          if (existingHues.every(h => circularHueDistance(candidate, h) >= MIN_HUE_DISTANCE)) {
+            return candidate;
+          }
+        }
+        // Не удалось за отведённое число попыток найти оттенок с достаточным
+        // отступом (например, уже занято очень много цветов) — берём тот,
+        // что максимально далёк от всех существующих, чтобы разница всё
+        // равно была наибольшей из возможных.
+        let best = Math.floor(Math.random() * 360);
+        let bestMinDist = -1;
+        for (let candidate = 0; candidate < 360; candidate += 2) {
+          const minDist = existingHues.length
+            ? Math.min(...existingHues.map(h => circularHueDistance(candidate, h)))
+            : 360;
+          if (minDist > bestMinDist) {
+            bestMinDist = minDist;
+            best = candidate;
+          }
+        }
+        return best;
+      }
 
-  const DOW_LABELS = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+      function buildColorSet(hue) {
+        const lightAccent = Math.min(COLOR_LIGHTNESS + 18, 82);
+        return {
+          solid: `hsl(${hue}, ${COLOR_SATURATION}%, ${COLOR_LIGHTNESS}%)`,
+          light: `hsl(${hue}, ${COLOR_SATURATION}%, ${lightAccent}%)`,
+          bg: `hsla(${hue}, ${COLOR_SATURATION}%, ${COLOR_LIGHTNESS}%, 0.15)`,
+          bgHover: `hsla(${hue}, ${COLOR_SATURATION}%, ${COLOR_LIGHTNESS}%, 0.25)`,
+          shadow: `hsla(${hue}, ${COLOR_SATURATION}%, ${COLOR_LIGHTNESS}%, 0.4)`
+        };
+      }
 
-  function getDateRange() {
-    const days = [];
-    const today = getMskNow();
-    today.setUTCHours(0, 0, 0, 0);
-    for (let offset = -5; offset <= 3; offset++) {
-      const d = new Date(today);
-      d.setUTCDate(d.getUTCDate() + offset);
-      days.push(d);
-    }
-    return days;
-  }
+      function getAuthorColorSet(name) {
+        const key = (name && String(name).trim()) || '—';
+        let entry = authorColorMap[key];
+        if (!entry || typeof entry.h !== 'number') {
+          const existingHues = Object.values(authorColorMap)
+            .map(c => c && c.h)
+            .filter(h => typeof h === 'number');
+          const hue = pickHueFarFromExisting(existingHues);
+          entry = { h: hue };
+          authorColorMap[key] = entry;
+          saveAuthorColors(authorColorMap);
+        }
+        return buildColorSet(entry.h);
+      }
 
-  // Выбранная дата по умолчанию — сегодня по МСК.
-  let selectedDate = fmtDateStr(getMskNow());
+      function authorColorStyleAttr(name) {
+        const c = getAuthorColorSet(name);
+        return ` style="--ac-solid:${c.solid}; --ac-light:${c.light}; --ac-bg:${c.bg}; --ac-bg-hover:${c.bgHover}; --ac-shadow:${c.shadow};"`;
+      }
 
-  function renderDateTabs() {
-    const wrap = $('dateTabs');
-    const days = getDateRange();
-    const todayStr = fmtDateStr(getMskNow());
+      // ============== АВТОРИЗАЦИЯ ЧЕРЕЗ ОДНОРАЗОВЫЙ ТОКЕН ==============
+      // /esr в игре больше не кладёт голый HWID в URL (он был бы фактически
+      // вечным ключом, если кто-то увидит ссылку в истории браузера/логах).
+      // Вместо этого воркер выдаёт одноразовый токен, живущий максимум 1
+      // минуту (см. /gen-token в worker.js). Мы обмениваем его на HWID через
+      // /check-token один раз, а сам HWID уже сохраняем в localStorage —
+      // именно поэтому повторные заходы на сайт (без /esr) продолжают
+      // работать как раньше, через сохранённый HWID.
+      function getTokenFromUrl() {
+        const hash = window.location.hash;
+        const match = hash.match(/&token=([^&/#]+)/);
+        return match ? decodeURIComponent(match[1]) : null;
+      }
 
-    wrap.innerHTML = days.map(d => {
-      const ds = fmtDateStr(d);
-      const isToday = ds === todayStr;
-      const isActive = ds === selectedDate;
-      const dow = DOW_LABELS[d.getUTCDay()];
-      const label = `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
-      return `<div class="date-tab ${isActive ? 'active' : ''} ${isToday ? 'today' : ''}" data-date="${ds}">
+      function cleanTokenFromUrl() {
+        const hash = window.location.hash;
+        if (hash.includes('&token=')) {
+          const cleanHash = hash.replace(/&token=[^&/#]+/, '');
+          window.history.replaceState(null, '', cleanHash || '#/');
+        }
+      }
+
+      // Одноразовый обмен: токен -> HWID. Токен гасится на сервере при первом
+      // же успешном (или неуспешном, но валидном) обращении, поэтому повторно
+      // им воспользоваться нельзя, даже если ссылка куда-то "утекла".
+      async function exchangeTokenForHwid(token) {
+        try {
+          const resp = await fetch(WORKER_URL + '/check-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token })
+          });
+          if (!resp.ok) return null;
+          const data = await resp.json();
+          return (data && data.ok && data.hwid) ? data.hwid : null;
+        } catch (e) {
+          console.error('[Auth] Token exchange failed:', e);
+          return null;
+        }
+      }
+
+      async function checkHwidServer(hwid) {
+        try {
+          const resp = await fetch(WORKER_URL + '/check-hwid', {
+            headers: { 'X-HWID': hwid }
+          });
+          if (!resp.ok) return { allowed: false, author: null, isAdmin: false };
+          const data = await resp.json();
+          return {
+            allowed: Boolean(data && data.ok && data.allowed),
+            author: (data && data.author) || null,
+            isAdmin: Boolean(data && data.is_admin)
+          };
+        } catch (e) {
+          console.error('[Auth] HWID check failed:', e);
+          return { allowed: false, author: null, isAdmin: false };
+        }
+      }
+
+      async function isAuthorized() {
+        // Если в URL есть одноразовый токен от /esr — обмениваем его на HWID.
+        const tokenFromUrl = getTokenFromUrl();
+        if (tokenFromUrl) {
+          const hwid = await exchangeTokenForHwid(tokenFromUrl);
+
+          // ВСЕГДА удаляем токен из URL (даже при неудачном обмене) — он
+          // одноразовый и хранить его дальше в адресной строке незачем.
+          cleanTokenFromUrl();
+
+          if (!hwid) {
+            localStorage.removeItem('authorized_hwid');
+            return false;
+          }
+
+          const result = await checkHwidServer(hwid);
+          if (!result.allowed) {
+            localStorage.removeItem('authorized_hwid');
+            return false;
+          }
+          localStorage.setItem('authorized_hwid', hwid);
+          currentHwid = hwid;
+          currentAuthor = result.author || 'Аноним';
+          isAdmin = result.isAdmin || false;
+          localStorage.setItem('user_name', currentAuthor);
+
+          // Загружаем список пользователей если это админ
+          if (isAdmin) {
+            await loadUsers();
+          }
+
+          return true;
+        }
+
+        // Токена в URL нет — проверяем сохранённый HWID (это путь, по
+        // которому сайт продолжает работать при обычных повторных заходах,
+        // без /esr).
+        const savedHwid = localStorage.getItem('authorized_hwid');
+        if (savedHwid) {
+          const result = await checkHwidServer(savedHwid);
+          if (!result.allowed) {
+            localStorage.removeItem('authorized_hwid');
+            return false;
+          }
+          currentHwid = savedHwid;
+          currentAuthor = result.author || 'Аноним';
+          isAdmin = result.isAdmin || false;
+          localStorage.setItem('user_name', currentAuthor);
+
+          // Загружаем список пользователей если это админ
+          if (isAdmin) {
+            await loadUsers();
+          }
+
+          return true;
+        }
+
+        return false;
+      }
+
+      function showAuthRequired() {
+        document.body.innerHTML = `<div class="auth-wrap"><div class="auth-card"><svg class="auth-ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="square"><rect x="3.5" y="7" width="9" height="6.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg><h1>Требуется авторизация</h1><p>Для доступа необходимо авторизоваться через скрипт.<br><br>Используйте команду <code>/esr</code> в игре.</p><div class="auth-note"><strong>Как это работает</strong>Команда /esr автоматически откроет браузер с вашим профилем. После первого входа вы будете авторизованы постоянно.</div></div></div>`;
+      }
+
+      // Загрузка списка всех пользователей (только для админа)
+      async function loadUsers() {
+        try {
+          const resp = await fetch(WORKER_URL + '/users', {
+            headers: { 'X-HWID': currentHwid }
+          });
+          if (!resp.ok) return;
+          const data = await resp.json();
+          if (data.ok && Array.isArray(data.users)) {
+            allUsers = data.users;
+          }
+        } catch (e) {
+          console.error('Failed to load users:', e);
+        }
+      }
+
+      if (!(await isAuthorized())) {
+        showAuthRequired();
+        return;
+      }
+
+      // ============== ВРЕМЯ: ВСЕГДА МСК, НЕЗАВИСИМО ОТ ЧАСОВОГО ПОЯСА УСТРОЙСТВА ==============
+      // МСК — это UTC+3 круглый год (в России нет перехода на летнее время),
+      // поэтому смещение фиксированное. Мы не полагаемся на локальные getters
+      // (getFullYear/getHours/...), так как они возвращают время часового
+      // пояса ПК пользователя. Вместо этого берём "сырые" миллисекунды epoch
+      // (они не зависят от часового пояса), прибавляем 3 часа и дальше везде
+      // читаем через getUTC*-методы — это даёт стабильную "московскую" дату
+      // и время на любом устройстве.
+      const MSK_OFFSET_MS = 3 * 60 * 60 * 1000;
+
+      function getMskNow() {
+        return new Date(Date.now() + MSK_OFFSET_MS);
+      }
+
+      // ============== ДАТЫ (5 дней назад + сегодня + 3 дня вперёд = 9) ==============
+      function fmtDateStr(d) {
+        const y = d.getUTCFullYear(), m = String(d.getUTCMonth() + 1).padStart(2, '0'), day = String(d.getUTCDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      }
+
+      const DOW_LABELS = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+
+      function getDateRange() {
+        const days = [];
+        const today = getMskNow();
+        today.setUTCHours(0, 0, 0, 0);
+        for (let offset = -5; offset <= 3; offset++) {
+          const d = new Date(today);
+          d.setUTCDate(d.getUTCDate() + offset);
+          days.push(d);
+        }
+        return days;
+      }
+
+      // Выбранная дата по умолчанию — сегодня по МСК.
+      let selectedDate = fmtDateStr(getMskNow());
+
+      function renderDateTabs() {
+        const wrap = $('dateTabs');
+        const days = getDateRange();
+        const todayStr = fmtDateStr(getMskNow());
+
+        wrap.innerHTML = days.map(d => {
+          const ds = fmtDateStr(d);
+          const isToday = ds === todayStr;
+          const isActive = ds === selectedDate;
+          const dow = DOW_LABELS[d.getUTCDay()];
+          const label = `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+          return `<div class="date-tab ${isActive ? 'active' : ''} ${isToday ? 'today' : ''}" data-date="${ds}">
         <div class="dow">${isToday ? 'Сегодня' : dow}</div>
         <div class="dnum">${label}</div>
       </div>`;
-    }).join('');
+        }).join('');
 
-    wrap.querySelectorAll('.date-tab').forEach(tab => {
-      tab.addEventListener('click', () => selectDate(tab.dataset.date));
-    });
-  }
-
-  async function selectDate(ds) {
-    if (ds === selectedDate) return;
-    selectedDate = ds;
-    renderDateTabs();
-    const grid = $('planGrid');
-    grid.style.opacity = '0.35';
-    await loadSchedule();
-    renderSlots();
-    grid.style.opacity = '1';
-  }
-
-  // Слот считается прошедшим, если его дата+время (трактуемые как МСК)
-  // уже позади текущего момента по МСК. Используется и для блокировки
-  // клика, и для затемнения. Дату/время слота парсим как UTC-строку —
-  // это просто способ получить "сырые" числа без вмешательства локального
-  // часового пояса браузера; сравниваем их с getMskNow(), который живёт
-  // в той же условной шкале ("epoch + 3ч"), поэтому сравнение корректно.
-  function isSlotPast(dateStr, timeStr) {
-    const [h, m] = timeStr.split(':').map(Number);
-    const slotDate = new Date(dateStr + 'T00:00:00Z');
-    slotDate.setUTCHours(h, m, 0, 0);
-    return slotDate.getTime() < getMskNow().getTime();
-  }
-
-  // ============== ГЕНЕРАЦИЯ ВРЕМЕННЫХ СЛОТОВ ==============
-  function generateTimeSlots() {
-    const slots = [];
-    for (let hour = 0; hour < 24; hour++) {
-      for (let minute = 0; minute < 60; minute += 20) {
-        const h = String(hour).padStart(2, '0');
-        const m = String(minute).padStart(2, '0');
-        slots.push(`${h}:${m}`);
+        wrap.querySelectorAll('.date-tab').forEach(tab => {
+          tab.addEventListener('click', () => selectDate(tab.dataset.date));
+        });
       }
-    }
-    return slots;
-  }
 
-  // ============== РАБОТА С ДАННЫМИ (общие через воркер/D1) ==============
-  let schedule = {}; // { "14:20": { author: "Имя", title: "Название" } } — для выбранной даты
+      async function selectDate(ds) {
+        if (ds === selectedDate) return;
+        selectedDate = ds;
+        renderDateTabs();
+        const grid = $('planGrid');
+        grid.style.opacity = '0.35';
+        await loadSchedule();
+        renderSlots();
+        grid.style.opacity = '1';
+      }
 
-  async function loadSchedule() {
-    try {
-      const resp = await fetch(WORKER_URL + '/plan?date=' + encodeURIComponent(selectedDate));
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const data = await resp.json();
-      if (!data.ok) throw new Error(data.error || 'unknown_error');
+      // Слот считается прошедшим, если его дата+время (трактуемые как МСК)
+      // уже позади текущего момента по МСК. Используется и для блокировки
+      // клика, и для затемнения. Дату/время слота парсим как UTC-строку —
+      // это просто способ получить "сырые" числа без вмешательства локального
+      // часового пояса браузера; сравниваем их с getMskNow(), который живёт
+      // в той же условной шкале ("epoch + 3ч"), поэтому сравнение корректно.
+      function isSlotPast(dateStr, timeStr) {
+        const [h, m] = timeStr.split(':').map(Number);
+        const slotDate = new Date(dateStr + 'T00:00:00Z');
+        slotDate.setUTCHours(h, m, 0, 0);
+        return slotDate.getTime() < getMskNow().getTime();
+      }
 
-      const next = {};
-      (data.slots || []).forEach(s => {
-        next[s.time] = { author: s.author, title: s.title };
-      });
-      schedule = next;
-    } catch (e) {
-      console.error('Failed to load schedule:', e);
-    }
-  }
+      // ============== ГЕНЕРАЦИЯ ВРЕМЕННЫХ СЛОТОВ ==============
+      function generateTimeSlots() {
+        const slots = [];
+        for (let hour = 0; hour < 24; hour++) {
+          for (let minute = 0; minute < 60; minute += 20) {
+            const h = String(hour).padStart(2, '0');
+            const m = String(minute).padStart(2, '0');
+            slots.push(`${h}:${m}`);
+          }
+        }
+        return slots;
+      }
 
-  // ============== ОТРИСОВКА СЛОТОВ ==============
-  function renderSlots() {
-    const grid = $('planGrid');
-    const slots = generateTimeSlots();
+      // ============== РАБОТА С ДАННЫМИ (общие через воркер/D1) ==============
+      let schedule = {}; // { "14:20": { author: "Имя", title: "Название" } } — для выбранной даты
 
-    grid.innerHTML = slots.map(time => {
-      const booking = schedule[time];
-      const isBooked = Boolean(booking);
-      const isPast = isSlotPast(selectedDate, time);
+      async function loadSchedule() {
+        try {
+          const resp = await fetch(WORKER_URL + '/plan?date=' + encodeURIComponent(selectedDate));
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const data = await resp.json();
+          if (!data.ok) throw new Error(data.error || 'unknown_error');
 
-      const classes = ['time-slot'];
-      if (isBooked) classes.push('booked');
-      // Для админа прошедшие слоты не помечаются как 'past', чтобы они
-      // оставались визуально активными и редактируемыми
-      if (isPast && !isAdmin) classes.push('past');
+          const next = {};
+          (data.slots || []).forEach(s => {
+            next[s.time] = { author: s.author, title: s.title };
+          });
+          schedule = next;
+        } catch (e) {
+          console.error('Failed to load schedule:', e);
+        }
+      }
 
-      const colorAttr = isBooked ? authorColorStyleAttr(booking.author) : '';
+      // ============== ОТРИСОВКА СЛОТОВ ==============
+      function renderSlots() {
+        const grid = $('planGrid');
+        const slots = generateTimeSlots();
 
-      return `
+        grid.innerHTML = slots.map(time => {
+          const booking = schedule[time];
+          const isBooked = Boolean(booking);
+          const isPast = isSlotPast(selectedDate, time);
+
+          const classes = ['time-slot'];
+          if (isBooked) classes.push('booked');
+          // Для админа прошедшие слоты не помечаются как 'past', чтобы они
+          // оставались визуально активными и редактируемыми
+          if (isPast && !isAdmin) classes.push('past');
+
+          const colorAttr = isBooked ? authorColorStyleAttr(booking.author) : '';
+
+          return `
         <div class="${classes.join(' ')}" data-time="${time}"${colorAttr} ${isBooked ? `title="${escapeHtml(booking.author)}: ${escapeHtml(booking.title)}"` : ''}>
           <div class="time-code">${time}</div>
           ${isBooked ? `<div class="slot-label">Занято</div>` : `<div class="slot-label">${isPast && !isAdmin ? 'Недоступно' : 'Доступно'}</div>`}
           ${isBooked ? `
-            <div class="slot-owner">👤 ${escapeHtml(booking.author)}</div>
+            <div class="slot-owner"><svg class="ic" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" ><circle cx="8" cy="5.5" r="2.5"/><path d="M3 13.5c0-2.8 2.2-4.5 5-4.5s5 1.7 5 4.5"/></svg> ${escapeHtml(booking.author)}</div>
             <div class="slot-owner-title">${escapeHtml(booking.title)}</div>
           ` : ''}
         </div>
       `;
-    }).join('');
+        }).join('');
 
-    // Добавляем обработчики событий. Для обычного пользователя прошедшие
-    // свободные слоты полностью некликабельны, а прошедшие занятые — только
-    // для просмотра. Для админа доступны ВСЕ слоты, включая прошедшие.
-    grid.querySelectorAll('.time-slot').forEach(slot => {
-      const time = slot.dataset.time;
-      const isBooked = Boolean(schedule[time]);
-      const isPast = isSlotPast(selectedDate, time);
-      if (!isAdmin && isPast && !isBooked) return;
-      slot.addEventListener('click', (e) => handleSlotClick(e, slot));
-    });
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  }
-
-  // ============== МОДАЛЬНОЕ ОКНО ==============
-  let currentTime = null;
-
-  function handleSlotClick(e, slot) {
-    currentTime = slot.dataset.time;
-    const booking = schedule[currentTime];
-    const modal = $('inputModal');
-    const rect = slot.getBoundingClientRect();
-
-    // Позиционируем модальное окно рядом с ячейкой
-    modal.style.left = Math.min(rect.left, window.innerWidth - 360) + 'px';
-    modal.style.top = Math.min(rect.top, window.innerHeight - 260) + 'px';
-
-    const isPast = isSlotPast(selectedDate, currentTime);
-    // Для админа любая бронь редактируема (в том числе чужая и прошедшая)
-    const isOwn = Boolean(booking) && (isAdmin || (booking.author === currentAuthor && !isPast));
-    const isForeign = Boolean(booking) && !isOwn;
-
-    // Чужую (или прошедшую для обычного юзера) бронь можно только посмотреть
-    $('modalViewInfo').style.display = isForeign ? 'block' : 'none';
-    $('eventTitle').style.display = isForeign ? 'none' : 'block';
-    $('eventAuthor').style.display = (isAdmin && !isForeign) ? 'block' : 'none';
-    $('btnSave').style.display = isForeign ? 'none' : 'inline-block';
-    $('btnDelete').style.display = isOwn ? 'inline-block' : 'none';
-    $('btnCancel').textContent = isForeign ? 'Закрыть' : 'Отмена';
-
-    // Заполняем список пользователей для админа
-    if (isAdmin && !isForeign) {
-      const select = $('eventAuthor');
-      select.innerHTML = '<option value="">Выберите автора</option>' + 
-        allUsers.map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join('');
-      
-      if (booking) {
-        select.value = booking.author;
-      } else {
-        select.value = '';
+        // Добавляем обработчики событий. Для обычного пользователя прошедшие
+        // свободные слоты полностью некликабельны, а прошедшие занятые — только
+        // для просмотра. Для админа доступны ВСЕ слоты, включая прошедшие.
+        grid.querySelectorAll('.time-slot').forEach(slot => {
+          const time = slot.dataset.time;
+          const isBooked = Boolean(schedule[time]);
+          const isPast = isSlotPast(selectedDate, time);
+          if (!isAdmin && isPast && !isBooked) return;
+          slot.addEventListener('click', (e) => handleSlotClick(e, slot));
+        });
       }
-    }
 
-    if (isForeign) {
-      $('modalHeader').textContent = `${selectedDate} · ${currentTime}${isPast ? ' · прошло' : ''}`;
-      $('modalViewInfo').innerHTML = `
-        <div><strong style="color:#d4a24e;">👤 ${escapeHtml(booking.author)}</strong></div>
-        <div style="margin-top:6px;">📋 ${escapeHtml(booking.title)}</div>
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      }
+
+      // ============== МОДАЛЬНОЕ ОКНО ==============
+      let currentTime = null;
+
+      function handleSlotClick(e, slot) {
+        currentTime = slot.dataset.time;
+        const booking = schedule[currentTime];
+        const modal = $('inputModal');
+        const rect = slot.getBoundingClientRect();
+
+        // Позиционируем модальное окно рядом с ячейкой
+        modal.style.left = Math.min(rect.left, window.innerWidth - 360) + 'px';
+        modal.style.top = Math.min(rect.top, window.innerHeight - 260) + 'px';
+
+        const isPast = isSlotPast(selectedDate, currentTime);
+        // Для админа любая бронь редактируема (в том числе чужая и прошедшая)
+        const isOwn = Boolean(booking) && (isAdmin || (booking.author === currentAuthor && !isPast));
+        const isForeign = Boolean(booking) && !isOwn;
+
+        // Чужую (или прошедшую для обычного юзера) бронь можно только посмотреть
+        $('modalViewInfo').style.display = isForeign ? 'block' : 'none';
+        $('eventTitle').style.display = isForeign ? 'none' : 'block';
+        $('eventAuthor').style.display = (isAdmin && !isForeign) ? 'block' : 'none';
+        $('btnSave').style.display = isForeign ? 'none' : 'inline-block';
+        $('btnDelete').style.display = isOwn ? 'inline-block' : 'none';
+        $('btnCancel').textContent = isForeign ? 'Закрыть' : 'Отмена';
+
+        // Заполняем список пользователей для админа
+        if (isAdmin && !isForeign) {
+          const select = $('eventAuthor');
+          select.innerHTML = '<option value="">Выберите автора</option>' +
+            allUsers.map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join('');
+
+          if (booking) {
+            select.value = booking.author;
+          } else {
+            select.value = '';
+          }
+        }
+
+        if (isForeign) {
+          $('modalHeader').textContent = `${selectedDate} · ${currentTime}${isPast ? ' · прошло' : ''}`;
+          $('modalViewInfo').innerHTML = `
+        <div><strong class="mv-author"><svg class="ic" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" ><circle cx="8" cy="5.5" r="2.5"/><path d="M3 13.5c0-2.8 2.2-4.5 5-4.5s5 1.7 5 4.5"/></svg> ${escapeHtml(booking.author)}</strong></div>
+        <div style="margin-top:6px;"><svg class="ic" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" ><rect x="3" y="2" width="10" height="12"/><path d="M5.5 6h5M5.5 9h5M5.5 11.5h3"/></svg> ${escapeHtml(booking.title)}</div>
       `;
-    } else if (isOwn && booking) {
-      $('modalHeader').textContent = `Редактировать: ${currentTime}`;
-      $('eventTitle').value = booking.title;
-    } else {
-      $('modalHeader').textContent = `Забронировать: ${currentTime}`;
-      $('eventTitle').value = '';
-    }
+        } else if (isOwn && booking) {
+          $('modalHeader').textContent = `Редактировать: ${currentTime}`;
+          $('eventTitle').value = booking.title;
+        } else {
+          $('modalHeader').textContent = `Забронировать: ${currentTime}`;
+          $('eventTitle').value = '';
+        }
 
-    modal.classList.add('show');
-    if (!isForeign) {
-      if (isAdmin) {
-        $('eventAuthor').focus();
-      } else {
-        $('eventTitle').focus();
-      }
-    }
-  }
-
-  function closeModal() {
-    $('inputModal').classList.remove('show');
-    currentTime = null;
-  }
-
-  function setModalBusy(busy) {
-    $('btnSave').disabled = busy;
-    $('btnDelete').disabled = busy;
-    $('btnCancel').disabled = busy;
-  }
-
-  async function saveBooking() {
-    const title = $('eventTitle').value.trim();
-    if (!title) {
-      alert('Введите название мероприятия');
-      return;
-    }
-
-    // Для админа: проверяем выбран ли автор
-    let selectedAuthor = null;
-    if (isAdmin) {
-      selectedAuthor = $('eventAuthor').value.trim();
-      if (!selectedAuthor) {
-        alert('Выберите автора мероприятия');
-        return;
-      }
-    }
-
-    setModalBusy(true);
-    try {
-      const body = { 
-        date: selectedDate, 
-        time: currentTime, 
-        title 
-      };
-      
-      // Админ может указать автора явно
-      if (isAdmin && selectedAuthor) {
-        body.author = selectedAuthor;
+        modal.classList.add('show');
+        if (!isForeign) {
+          if (isAdmin) {
+            $('eventAuthor').focus();
+          } else {
+            $('eventTitle').focus();
+          }
+        }
       }
 
-      const resp = await fetch(WORKER_URL + '/plan', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-HWID': currentHwid
-        },
-        body: JSON.stringify(body)
+      function closeModal() {
+        $('inputModal').classList.remove('show');
+        currentTime = null;
+      }
+
+      function setModalBusy(busy) {
+        $('btnSave').disabled = busy;
+        $('btnDelete').disabled = busy;
+        $('btnCancel').disabled = busy;
+      }
+
+      async function saveBooking() {
+        const title = $('eventTitle').value.trim();
+        if (!title) {
+          alert('Введите название мероприятия');
+          return;
+        }
+
+        // Для админа: проверяем выбран ли автор
+        let selectedAuthor = null;
+        if (isAdmin) {
+          selectedAuthor = $('eventAuthor').value.trim();
+          if (!selectedAuthor) {
+            alert('Выберите автора мероприятия');
+            return;
+          }
+        }
+
+        setModalBusy(true);
+        try {
+          const body = {
+            date: selectedDate,
+            time: currentTime,
+            title
+          };
+
+          // Админ может указать автора явно
+          if (isAdmin && selectedAuthor) {
+            body.author = selectedAuthor;
+          }
+
+          const resp = await fetch(WORKER_URL + '/plan', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-HWID': currentHwid
+            },
+            body: JSON.stringify(body)
+          });
+          const data = await resp.json();
+          if (!data.ok) {
+            alert('Не удалось сохранить бронирование: ' + (data.error || 'неизвестная ошибка'));
+            return;
+          }
+          schedule[currentTime] = { author: data.author, title: data.title };
+          renderSlots();
+          closeModal();
+        } catch (e) {
+          console.error('Failed to save booking:', e);
+          alert('Не удалось связаться с сервером. Проверьте соединение и попробуйте ещё раз.');
+        } finally {
+          setModalBusy(false);
+        }
+      }
+
+      async function deleteBooking() {
+        if (!confirm('Удалить бронирование?')) return;
+
+        setModalBusy(true);
+        try {
+          const resp = await fetch(WORKER_URL + '/plan/delete', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-HWID': currentHwid
+            },
+            body: JSON.stringify({ date: selectedDate, time: currentTime })
+          });
+          const data = await resp.json();
+          if (!data.ok) {
+            alert('Не удалось удалить бронирование: ' + (data.error || 'неизвестная ошибка'));
+            return;
+          }
+          delete schedule[currentTime];
+          renderSlots();
+          closeModal();
+        } catch (e) {
+          console.error('Failed to delete booking:', e);
+          alert('Не удалось связаться с сервером. Проверьте соединение и попробуйте ещё раз.');
+        } finally {
+          setModalBusy(false);
+        }
+      }
+
+      // Обработчики кнопок модального окна
+      $('btnSave').addEventListener('click', saveBooking);
+      $('btnCancel').addEventListener('click', closeModal);
+      $('btnDelete').addEventListener('click', deleteBooking);
+
+      // Закрытие по Escape
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeModal();
       });
-      const data = await resp.json();
-      if (!data.ok) {
-        alert('Не удалось сохранить бронирование: ' + (data.error || 'неизвестная ошибка'));
-        return;
-      }
-      schedule[currentTime] = { author: data.author, title: data.title };
-      renderSlots();
-      closeModal();
-    } catch (e) {
-      console.error('Failed to save booking:', e);
-      alert('Не удалось связаться с сервером. Проверьте соединение и попробуйте ещё раз.');
-    } finally {
-      setModalBusy(false);
-    }
-  }
 
-  async function deleteBooking() {
-    if (!confirm('Удалить бронирование?')) return;
-
-    setModalBusy(true);
-    try {
-      const resp = await fetch(WORKER_URL + '/plan/delete', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-HWID': currentHwid
-        },
-        body: JSON.stringify({ date: selectedDate, time: currentTime })
+      // Закрытие по клику вне модального окна
+      document.addEventListener('click', (e) => {
+        const modal = $('inputModal');
+        if (modal.classList.contains('show') && !modal.contains(e.target) && !e.target.closest('.time-slot')) {
+          closeModal();
+        }
       });
-      const data = await resp.json();
-      if (!data.ok) {
-        alert('Не удалось удалить бронирование: ' + (data.error || 'неизвестная ошибка'));
-        return;
+
+      // ============== ИНИЦИАЛИЗАЦИЯ ==============
+      async function init() {
+        $('loadingState').style.display = 'block';
+        $('app').style.display = 'none';
+
+        renderDateTabs();
+        await loadSchedule();
+
+        $('loadingState').style.display = 'none';
+        $('app').style.display = 'block';
+
+        renderSlots();
       }
-      delete schedule[currentTime];
-      renderSlots();
-      closeModal();
-    } catch (e) {
-      console.error('Failed to delete booking:', e);
-      alert('Не удалось связаться с сервером. Проверьте соединение и попробуйте ещё раз.');
-    } finally {
-      setModalBusy(false);
-    }
-  }
 
-  // Обработчики кнопок модального окна
-  $('btnSave').addEventListener('click', saveBooking);
-  $('btnCancel').addEventListener('click', closeModal);
-  $('btnDelete').addEventListener('click', deleteBooking);
-
-  // Закрытие по Escape
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeModal();
-  });
-
-  // Закрытие по клику вне модального окна
-  document.addEventListener('click', (e) => {
-    const modal = $('inputModal');
-    if (modal.classList.contains('show') && !modal.contains(e.target) && !e.target.closest('.time-slot')) {
-      closeModal();
-    }
-  });
-
-  // ============== ИНИЦИАЛИЗАЦИЯ ==============
-  async function init() {
-    $('loadingState').style.display = 'block';
-    $('app').style.display = 'none';
-
-    renderDateTabs();
-    await loadSchedule();
-
-    $('loadingState').style.display = 'none';
-    $('app').style.display = 'block';
-
-    renderSlots();
-  }
-
-  init();
-})();
-</script>
+      init();
+    })();
+  </script>
 
 </body>
+
 </html>

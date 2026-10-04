@@ -1,621 +1,570 @@
 <!DOCTYPE html>
 <html lang="ru">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>EventScan · Авторы</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
-<script>
-  if (typeof Chart === 'undefined') {
-    document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\/script>');
-  }
-</script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EventScan · Авторы</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Spectral:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script>
+    if (typeof Chart === 'undefined') {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\/script>');
+    }
+  </script>
 </head>
+
 <body>
 
-<div class="hero-bg hero-bg-blurred" id="heroBg" aria-hidden="true"></div>
+  <header>
+    <div class="brand"><svg class="brand-mark" viewBox="0 0 30 30" fill="none"><rect x="1.5" y="1.5" width="27" height="27" stroke="#16150f" stroke-width="2"/><path d="M1.5 28.5L28.5 1.5" stroke="#16150f" stroke-width="2"/><circle cx="21" cy="21" r="4.5" fill="#c8381f"/></svg><div class="brand-copy">
+        <h1 id="brandTitle">Arizona Event CRM</h1>
+        <div class="subtitle" id="brandSub">Журнал отчётов о проведенных МП</div>
+      </div>
+    </div>
 
-<div class="aurora" aria-hidden="true"><span class="b1"></span><span class="b2"></span><span class="b3"></span></div>
+    <div class="nav-tabs-wrap">
+      <nav class="nav-tabs">
+        <a href="index.html">Дашборд</a>
+        <a href="author.html" class="active">Авторы</a>
+      </nav>
+      <nav class="nav-tabs nav-tabs-secondary">
+        <a href="plan.html">Планировщик</a>
+        <a href="report.html">Отчёт</a>
+      </nav>
+    </div>
 
-<header>
-  <div class="brand">
-    <div class="brand-copy">
-      <h1 id="brandTitle">Arizona Event CRM</h1>
-      <div class="subtitle" id="brandSub">Журнал отчётов о проведенных МП</div>
+  </header>
+
+  <main style="opacity:1; transform:none;">
+
+    <div id="gateErrorWrap"></div>
+    <div class="loading" id="loadingState">
+      <div class="spinner"></div>
+      Загружаем отчёты…
+    </div>
+
+    <div id="app">
+
+      <!-- ============ AUTHORS VIEW ============ -->
+      <section id="view-authors" style="display:none;">
+        <div class="section-head js-reveal">
+          <div><span class="eyebrow">Печати гильдии</span>
+            <h2>Авторы отчётов</h2>
+          </div>
+        </div>
+        <div class="authors-toolbar js-reveal">
+          <input type="text" id="authorsSearch" placeholder="Поиск автора…">
+          <span class="pill" id="weekRangeLabel">неделя: —</span>
+        </div>
+        <div class="authors-grid" id="authorsGrid"></div>
+        <div class="empty-authors" id="authorsEmpty" style="display:none;">Авторов пока не найдено.</div>
+      </section>
+
+      <!-- ============ AUTHOR DETAIL VIEW ============ -->
+      <section id="view-author-detail" style="display:none;">
+        <button class="back-link" id="backToAuthors"><svg class="ic" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" ><path d="M13 8H3M7 4L3 8l4 4"/></svg> Все авторы</button>
+
+        <div class="glass author-hero js-reveal">
+          <div class="seal-ring-wrap" id="heroRingWrap"></div>
+          <div>
+            <h2 id="authorName">—</h2>
+            <div class="sub" id="authorSub">—</div>
+          </div>
+          <div class="hero-stats">
+            <div class="hero-stat">
+              <div class="label">МП за неделю</div>
+              <div class="value gold" id="statWeek">0</div>
+            </div>
+            <div class="hero-stat">
+              <div class="label">Всего отчётов</div>
+              <div class="value" id="statTotal">0</div>
+            </div>
+            <div class="hero-stat">
+              <div class="label">Участников собрано</div>
+              <div class="value teal" id="statPlayers">0</div>
+            </div>
+            <div class="hero-stat">
+              <div class="label">Любимое событие</div>
+              <div class="value" id="statFav" style="font-size:14px;">—</div>
+            </div>
+            <div class="hero-stat">
+              <div class="label">Баланс</div>
+              <div class="value" id="statBalance">0</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="bento">
+          <div class="glass panel b-12 js-reveal">
+            <div class="panel-title"><span><span class="tick"></span>Активность автора по датам</span></div>
+            <div class="chart-wrap short"><canvas id="chartAuthorTimeline"></canvas></div>
+          </div>
+        </div>
+
+        <div class="table-header js-reveal">
+          <h3>Отчёты автора</h3>
+        </div>
+        <div class="table-scroll js-reveal">
+          <table>
+            <thead>
+              <tr>
+                <th>Дата / время</th>
+                <th>Событие</th>
+                <th>Победитель</th>
+                <th>Участники</th>
+              </tr>
+            </thead>
+            <tbody id="authorTableBody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="authorEmptyState" style="display:none;">У этого автора пока нет отчётов.</div>
+      </section>
+
+    </div>
+
+  </main>
+
+  <!-- shared SVG gradient defs for seal rings -->
+  <div class="lightbox" id="lightbox">
+    <div class="lightbox-frame">
+      <button class="lightbox-close" id="lightboxClose" aria-label="Закрыть"><svg class="ic" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" ><path d="M3 3l10 10M13 3L3 13"/></svg></button>
+      <img id="lightboxImg" src="" alt="Скан крупным планом">
     </div>
   </div>
 
-  <div class="nav-tabs-wrap">
-    <nav class="nav-tabs">
-      <a href="index.html">Дашборд</a>
-      <a href="author.html" class="active">Авторы</a>
-    </nav>
-    <nav class="nav-tabs nav-tabs-secondary">
-      <a href="plan.html">Планировщик</a>
-      <a href="report.html">Отчёт</a>
-    </nav>
-  </div>
+  <script>
+    (async function () {
+      const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
+      let allReports = [];
+      let balancesMap = new Map(); // author -> balance from D1
+      let charts = {};
+      const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const hasGsap = typeof gsap !== 'undefined';
 
-</header>
+      const $ = (id) => document.getElementById(id);
 
-<main style="opacity:1; transform:none;">
-
-  <div id="gateErrorWrap"></div>
-  <div class="loading" id="loadingState">
-    <div class="spinner"></div>
-    Загружаем отчёты…
-  </div>
-
-  <div id="app">
-
-    <!-- ============ AUTHORS VIEW ============ -->
-    <section id="view-authors" style="display:none;">
-      <div class="section-head js-reveal">
-        <div><span class="eyebrow">Печати гильдии</span><h2>Авторы отчётов</h2></div>
-      </div>
-      <div class="authors-toolbar js-reveal">
-        <input type="text" id="authorsSearch" placeholder="Поиск автора…" style="width:260px; max-width:100%; background:rgba(255,255,255,.03); border:1px solid var(--border); color:var(--text); padding:11px 15px; border-radius:999px; font-size:12.5px; outline:none;">
-        <span class="pill" id="weekRangeLabel">неделя: —</span>
-      </div>
-      <div class="authors-grid" id="authorsGrid"></div>
-      <div class="empty-authors" id="authorsEmpty" style="display:none;">Авторов пока не найдено.</div>
-    </section>
-
-    <!-- ============ AUTHOR DETAIL VIEW ============ -->
-    <section id="view-author-detail" style="display:none;">
-      <button class="back-link" id="backToAuthors">← Все авторы</button>
-
-      <div class="glass author-hero js-reveal">
-        <div class="seal-ring-wrap" id="heroRingWrap"></div>
-        <div>
-          <h2 id="authorName">—</h2>
-          <div class="sub" id="authorSub">—</div>
-        </div>
-        <div class="hero-stats">
-          <div class="hero-stat"><div class="label">МП за неделю</div><div class="value gold" id="statWeek">0</div></div>
-          <div class="hero-stat"><div class="label">Всего отчётов</div><div class="value" id="statTotal">0</div></div>
-          <div class="hero-stat"><div class="label">Участников собрано</div><div class="value teal" id="statPlayers">0</div></div>
-          <div class="hero-stat"><div class="label">Любимое событие</div><div class="value" id="statFav" style="font-size:14px;">—</div></div>
-          <div class="hero-stat"><div class="label">Баланс</div><div class="value" id="statBalance">0</div></div>
-        </div>
-      </div>
-
-      <div class="bento">
-        <div class="glass panel b-12 js-reveal">
-          <div class="panel-title"><span><span class="tick"></span>Активность автора по датам</span></div>
-          <div class="chart-wrap short"><canvas id="chartAuthorTimeline"></canvas></div>
-        </div>
-      </div>
-
-      <div class="table-header js-reveal">
-        <h3>Отчёты автора</h3>
-      </div>
-      <div class="table-scroll js-reveal">
-        <table>
-          <thead>
-            <tr>
-              <th>Дата / время</th>
-              <th>Событие</th>
-              <th>Победитель</th>
-              <th>Участники</th>
-            </tr>
-          </thead>
-          <tbody id="authorTableBody"></tbody>
-        </table>
-      </div>
-      <div class="empty-state" id="authorEmptyState" style="display:none;">У этого автора пока нет отчётов.</div>
-    </section>
-
-  </div>
-
-</main>
-
-<!-- shared SVG gradient defs for seal rings -->
-<svg width="0" height="0" style="position:absolute;">
-  <defs>
-    <linearGradient id="sealGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#f2c877"/>
-      <stop offset="100%" stop-color="#d4a24e"/>
-    </linearGradient>
-  </defs>
-</svg>
-<div class="lightbox" id="lightbox">
-  <div class="lightbox-frame">
-    <button class="lightbox-close" id="lightboxClose" aria-label="Закрыть">✕</button>
-    <img id="lightboxImg" src="" alt="Скан крупным планом">
-  </div>
-</div>
-
-<script>
-(async function(){
-  const WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
-  let allReports = [];
-  let balancesMap = new Map(); // author -> balance from D1
-  let charts = {};
-  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const hasGsap = typeof gsap !== 'undefined';
-
-  const $ = (id) => document.getElementById(id);
-
-  // ============== АВТОРИЗАЦИЯ ЧЕРЕЗ ОДНОРАЗОВЫЙ ТОКЕН ==============
-  // /esr в игре больше не кладёт голый HWID в URL (он был бы фактически
-  // вечным ключом, если кто-то увидит ссылку в истории браузера/логах).
-  // Вместо этого воркер выдаёт одноразовый токен, живущий максимум 1
-  // минуту (см. /gen-token в worker.js). Мы обмениваем его на HWID через
-  // /check-token один раз, а сам HWID уже сохраняем в localStorage —
-  // именно поэтому повторные заходы на сайт (без /esr) продолжают
-  // работать как раньше, через сохранённый HWID.
-  function getTokenFromUrl() {
-    const hash = window.location.hash;
-    const match = hash.match(/&token=([^&/#]+)/);
-    return match ? decodeURIComponent(match[1]) : null;
-  }
-
-  function cleanTokenFromUrl() {
-    const hash = window.location.hash;
-    if (hash.includes('&token=')) {
-      const cleanHash = hash.replace(/&token=[^&/#]+/, '');
-      window.history.replaceState(null, '', cleanHash || '#/');
-    }
-  }
-
-  // Одноразовый обмен: токен -> HWID. Токен гасится на сервере при первом
-  // же успешном (или неуспешном, но валидном) обращении, поэтому повторно
-  // им воспользоваться нельзя, даже если ссылка куда-то "утекла".
-  async function exchangeTokenForHwid(token) {
-    try {
-      const resp = await fetch(WORKER_URL + '/check-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token })
-      });
-      if (!resp.ok) return null;
-      const data = await resp.json();
-      return (data && data.ok && data.hwid) ? data.hwid : null;
-    } catch (e) {
-      console.error('[Auth] Token exchange failed:', e);
-      return null;
-    }
-  }
-
-  // Спрашиваем сам воркер, есть ли этот HWID в вайтлисте — вместо того,
-  // чтобы верить любой строке, которую подсунули в URL/localStorage.
-  async function isHwidAllowedByServer(hwid) {
-    try {
-      const resp = await fetch(WORKER_URL + '/check-hwid', {
-        headers: { 'X-HWID': hwid }
-      });
-      if (!resp.ok) return false;
-      const data = await resp.json();
-      return Boolean(data && data.ok && data.allowed);
-    } catch (e) {
-      console.error('[Auth] HWID check request failed:', e);
-      return false;
-    }
-  }
-
-  async function isAuthorized() {
-    // Если в URL есть одноразовый токен от /esr — обмениваем его на HWID.
-    const tokenFromUrl = getTokenFromUrl();
-    if (tokenFromUrl) {
-      console.log('[Auth] Login token found in URL');
-      const hwid = await exchangeTokenForHwid(tokenFromUrl);
-
-      // ВСЕГДА удаляем токен из URL (даже при неудачном обмене) — он
-      // одноразовый и хранить его дальше в адресной строке незачем.
-      cleanTokenFromUrl();
-
-      if (!hwid) {
-        console.log('[Auth] Token exchange rejected by server');
-        localStorage.removeItem('authorized_hwid');
-        return false;
+      // ============== АВТОРИЗАЦИЯ ЧЕРЕЗ ОДНОРАЗОВЫЙ ТОКЕН ==============
+      // /esr в игре больше не кладёт голый HWID в URL (он был бы фактически
+      // вечным ключом, если кто-то увидит ссылку в истории браузера/логах).
+      // Вместо этого воркер выдаёт одноразовый токен, живущий максимум 1
+      // минуту (см. /gen-token в worker.js). Мы обмениваем его на HWID через
+      // /check-token один раз, а сам HWID уже сохраняем в localStorage —
+      // именно поэтому повторные заходы на сайт (без /esr) продолжают
+      // работать как раньше, через сохранённый HWID.
+      function getTokenFromUrl() {
+        const hash = window.location.hash;
+        const match = hash.match(/&token=([^&/#]+)/);
+        return match ? decodeURIComponent(match[1]) : null;
       }
 
-      localStorage.setItem('authorized_hwid', hwid);
-      console.log('[Auth] HWID obtained via token and saved to localStorage');
-      return true;
-    }
-
-    // Токена в URL нет — проверяем сохранённый HWID и тоже сверяем с
-    // сервером (на случай, если он был отозван из вайтлиста после
-    // сохранения). Это и есть тот путь, по которому сайт продолжает
-    // работать при обычных повторных заходах, без /esr.
-    const savedHwid = localStorage.getItem('authorized_hwid');
-    if (savedHwid) {
-      const allowed = await isHwidAllowedByServer(savedHwid);
-      if (!allowed) {
-        localStorage.removeItem('authorized_hwid');
-        return false;
+      function cleanTokenFromUrl() {
+        const hash = window.location.hash;
+        if (hash.includes('&token=')) {
+          const cleanHash = hash.replace(/&token=[^&/#]+/, '');
+          window.history.replaceState(null, '', cleanHash || '#/');
+        }
       }
-      return true;
-    }
 
-    return false;
-  }
+      // Одноразовый обмен: токен -> HWID. Токен гасится на сервере при первом
+      // же успешном (или неуспешном, но валидном) обращении, поэтому повторно
+      // им воспользоваться нельзя, даже если ссылка куда-то "утекла".
+      async function exchangeTokenForHwid(token) {
+        try {
+          const resp = await fetch(WORKER_URL + '/check-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token })
+          });
+          if (!resp.ok) return null;
+          const data = await resp.json();
+          return (data && data.ok && data.hwid) ? data.hwid : null;
+        } catch (e) {
+          console.error('[Auth] Token exchange failed:', e);
+          return null;
+        }
+      }
 
-  async function checkAuth() {
-    const authorized = await isAuthorized();
-    if (!authorized) {
-      showAuthRequired();
-      return false;
-    }
-    return true;
-  }
+      // Спрашиваем сам воркер, есть ли этот HWID в вайтлисте — вместо того,
+      // чтобы верить любой строке, которую подсунули в URL/localStorage.
+      async function isHwidAllowedByServer(hwid) {
+        try {
+          const resp = await fetch(WORKER_URL + '/check-hwid', {
+            headers: { 'X-HWID': hwid }
+          });
+          if (!resp.ok) return false;
+          const data = await resp.json();
+          return Boolean(data && data.ok && data.allowed);
+        } catch (e) {
+          console.error('[Auth] HWID check request failed:', e);
+          return false;
+        }
+      }
 
-  function showAuthRequired() {
-    document.body.innerHTML = `
-      <div style="
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        min-height: 100vh;
-        background: linear-gradient(135deg, #0a0e14 0%, #1a1f2e 100%);
-        color: #ece7da;
-        font-family: 'Inter', sans-serif;
-        text-align: center;
-        padding: 20px;
-      ">
-        <div style="
-          background: rgba(26, 31, 46, 0.8);
-          border: 2px solid #4fc3b0;
-          border-radius: 16px;
-          padding: 40px;
-          max-width: 500px;
-          box-shadow: 0 8px 32px rgba(79, 195, 176, 0.2);
-        ">
-          <h1 style="
-            font-family: 'Cinzel', serif;
-            font-size: 32px;
-            margin-bottom: 20px;
-            color: #4fc3b0;
-          ">🔒 Требуется авторизация</h1>
-          <p style="
-            font-size: 16px;
-            line-height: 1.6;
-            margin-bottom: 30px;
-            color: #c8cdd8;
-          ">
-            Для доступа к CRM необходимо авторизоваться через скрипт.<br><br>
-            Используйте команду <code style="
-              background: #0a0e14;
-              padding: 4px 8px;
-              border-radius: 4px;
-              color: #4fc3b0;
-              font-family: 'JetBrains Mono', monospace;
-            ">/esr</code> в игре для авторизации.
-          </p>
-          <div style="
-            background: rgba(79, 195, 176, 0.1);
-            border-left: 3px solid #4fc3b0;
-            padding: 15px;
-            text-align: left;
-            border-radius: 4px;
-            font-size: 14px;
-            color: #929aab;
-          ">
-            <strong style="color: #4fc3b0;">Как это работает:</strong><br>
-            Команда /esr автоматически откроет браузер с вашим профилем.<br>
-            После первого входа вы будете авторизованы постоянно.
-          </div>
-        </div>
-      </div>
-    `;
-  }
+      async function isAuthorized() {
+        // Если в URL есть одноразовый токен от /esr — обмениваем его на HWID.
+        const tokenFromUrl = getTokenFromUrl();
+        if (tokenFromUrl) {
+          console.log('[Auth] Login token found in URL');
+          const hwid = await exchangeTokenForHwid(tokenFromUrl);
 
-  // Проверяем авторизацию при загрузке
-  if (!(await checkAuth())) {
-    return; // Останавливаем выполнение, если не авторизован
-  }
-  // ==================================================
+          // ВСЕГДА удаляем токен из URL (даже при неудачном обмене) — он
+          // одноразовый и хранить его дальше в адресной строке незачем.
+          cleanTokenFromUrl();
 
-  // ---------------- motion helpers ----------------
-  function revealStagger(selectorOrEls, opts){
-    if(!hasGsap || reduceMotion) return;
-    const els = typeof selectorOrEls === 'string' ? document.querySelectorAll(selectorOrEls) : selectorOrEls;
-    if(!els || !els.length) return;
-    gsap.fromTo(els, { opacity:0, y: 22 }, Object.assign({
-      opacity:1, y:0, duration:.7, ease:'power3.out', stagger:.06, clearProps:'transform'
-    }, opts||{}));
-  }
-  function countUp(el, target, opts){
-    if(!el) return;
-    const isFloat = opts && opts.decimals;
-    if(!hasGsap || reduceMotion){
-      el.textContent = isFloat ? Number(target).toFixed(isFloat) : Math.round(target).toLocaleString('ru-RU');
-      return;
-    }
-    const obj = { v: 0 };
-    gsap.to(obj, {
-      v: target, duration: 1.1, ease:'power2.out', delay: (opts && opts.delay)||0,
-      onUpdate(){ el.textContent = isFloat ? obj.v.toFixed(isFloat) : Math.round(obj.v).toLocaleString('ru-RU'); }
-    });
-  }
-  function magnetTilt(cardSelector){
-    if(reduceMotion || !hasGsap) return;
-    document.querySelectorAll(cardSelector).forEach(card => {
-      card.addEventListener('mousemove', (e) => {
-        const r = card.getBoundingClientRect();
-        const x = (e.clientX - r.left) / r.width - 0.5;
-        const y = (e.clientY - r.top) / r.height - 0.5;
-        gsap.to(card, { rotateX: y * -3.5, rotateY: x * 3.5, duration: .4, ease:'power2.out', transformPerspective: 700 });
-      });
-      card.addEventListener('mouseleave', () => {
-        gsap.to(card, { rotateX: 0, rotateY: 0, duration: .5, ease:'power3.out' });
-      });
-    });
-  }
-
-  // ---------------- status / gate ----------------
-  function setStatus(state, text){
-    const dot = $('statusDot'), label = $('statusText');
-    if(dot) dot.className = 'dot' + (state === 'live' ? ' live' : state === 'err' ? ' err' : '');
-    if(label) label.textContent = text;
-  }
-
-  function showError(msg){
-    $('loadingState').style.display = 'none';
-    $('app').style.display = 'none';
-    $('gateErrorWrap').innerHTML = `<div class="gate-error">${escapeHtml(msg)}</div>`;
-  }
-
-  async function connectAndLoad(){
-    $('gateErrorWrap').innerHTML = '';
-    $('loadingState').style.display = 'block';
-    $('app').style.display = 'none';
-    setStatus('', 'загрузка…');
-    try{
-      const [res, balRes] = await Promise.all([
-        fetch(WORKER_URL + '/reports?limit=200'),
-        fetch(WORKER_URL + '/balances').catch(() => null)
-      ]);
-      if(!res.ok){ throw new Error('Ошибка сервера: HTTP ' + res.status); }
-      const data = await res.json();
-      if(!data.ok){ throw new Error(data.error || 'Неизвестная ошибка воркера.'); }
-      allReports = (data.reports || []).map(parseReport);
-
-      balancesMap = new Map();
-      if(balRes && balRes.ok){
-        try{
-          const bdata = await balRes.json();
-          if(bdata && bdata.ok && Array.isArray(bdata.balances)){
-            bdata.balances.forEach(b => {
-              const key = (b.author || '').trim() || '—';
-              balancesMap.set(key, Number(b.balance) || 0);
-            });
+          if (!hwid) {
+            console.log('[Auth] Token exchange rejected by server');
+            localStorage.removeItem('authorized_hwid');
+            return false;
           }
-        }catch(e){ /* эндпоинт /balances недоступен или вернул не JSON — считаем баланс 0 */ }
+
+          localStorage.setItem('authorized_hwid', hwid);
+          console.log('[Auth] HWID obtained via token and saved to localStorage');
+          return true;
+        }
+
+        // Токена в URL нет — проверяем сохранённый HWID и тоже сверяем с
+        // сервером (на случай, если он был отозван из вайтлиста после
+        // сохранения). Это и есть тот путь, по которому сайт продолжает
+        // работать при обычных повторных заходах, без /esr.
+        const savedHwid = localStorage.getItem('authorized_hwid');
+        if (savedHwid) {
+          const allowed = await isHwidAllowedByServer(savedHwid);
+          if (!allowed) {
+            localStorage.removeItem('authorized_hwid');
+            return false;
+          }
+          return true;
+        }
+
+        return false;
       }
 
-      setStatus('live', 'подключено · ' + allReports.length + ' отчётов');
-      $('loadingState').style.display = 'none';
-      $('app').style.display = 'block';
-      renderRoute();
-    } catch(e){
-      setStatus('err', 'ошибка подключения');
-      let hint = e.message || String(e);
-      if(hint.includes('Failed to fetch')){
-        hint = 'Не удалось достучаться до воркера. Проверь, что он задеплоен и в нём включены CORS-заголовки (см. worker-with-cors.js).';
+      async function checkAuth() {
+        const authorized = await isAuthorized();
+        if (!authorized) {
+          showAuthRequired();
+          return false;
+        }
+        return true;
       }
-      showError(hint);
-    }
-  }
 
-  function parseReport(r){
-    let players = [], scans = [];
-    try{ players = JSON.parse(r.players || '[]'); }catch(e){}
-    try{ scans = JSON.parse(r.scans || '[]'); }catch(e){}
-    if(!Array.isArray(players)) players = [];
-    if(!Array.isArray(scans)) scans = [];
-    return { ...r, playersArr: players, scansArr: scans };
-  }
+      function showAuthRequired() {
+        document.body.innerHTML = `<div class="auth-wrap"><div class="auth-card"><svg class="auth-ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="square"><rect x="3.5" y="7" width="9" height="6.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg><h1>Требуется авторизация</h1><p>Для доступа необходимо авторизоваться через скрипт.<br><br>Используйте команду <code>/esr</code> в игре.</p><div class="auth-note"><strong>Как это работает</strong>Команда /esr автоматически откроет браузер с вашим профилем. После первого входа вы будете авторизованы постоянно.</div></div></div>`;
+      }
 
-  function escapeHtml(s){
-    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  }
-  function escapeAttr(s){ return escapeHtml(s); }
+      // Проверяем авторизацию при загрузке
+      if (!(await checkAuth())) {
+        return; // Останавливаем выполнение, если не авторизован
+      }
+      // ==================================================
 
-  function fmtMoney(n){
-    const sign = n < 0 ? '−' : '';
-    return sign + Math.abs(n).toLocaleString('ru-RU');
-  }
+      // ---------------- motion helpers ----------------
+      function revealStagger(selectorOrEls, opts) {
+        if (!hasGsap || reduceMotion) return;
+        const els = typeof selectorOrEls === 'string' ? document.querySelectorAll(selectorOrEls) : selectorOrEls;
+        if (!els || !els.length) return;
+        gsap.fromTo(els, { opacity: 0, y: 22 }, Object.assign({
+          opacity: 1, y: 0, duration: .7, ease: 'power3.out', stagger: .06, clearProps: 'transform'
+        }, opts || {}));
+      }
+      function countUp(el, target, opts) {
+        if (!el) return;
+        const isFloat = opts && opts.decimals;
+        if (!hasGsap || reduceMotion) {
+          el.textContent = isFloat ? Number(target).toFixed(isFloat) : Math.round(target).toLocaleString('ru-RU');
+          return;
+        }
+        const obj = { v: 0 };
+        gsap.to(obj, {
+          v: target, duration: 1.1, ease: 'power2.out', delay: (opts && opts.delay) || 0,
+          onUpdate() { el.textContent = isFloat ? obj.v.toFixed(isFloat) : Math.round(obj.v).toLocaleString('ru-RU'); }
+        });
+      }
+      function magnetTilt(cardSelector) {
+        if (reduceMotion || !hasGsap) return;
+        document.querySelectorAll(cardSelector).forEach(card => {
+          card.addEventListener('mousemove', (e) => {
+            const r = card.getBoundingClientRect();
+            const x = (e.clientX - r.left) / r.width - 0.5;
+            const y = (e.clientY - r.top) / r.height - 0.5;
+            gsap.to(card, { rotateX: y * -3.5, rotateY: x * 3.5, duration: .4, ease: 'power2.out', transformPerspective: 700 });
+          });
+          card.addEventListener('mouseleave', () => {
+            gsap.to(card, { rotateX: 0, rotateY: 0, duration: .5, ease: 'power3.out' });
+          });
+        });
+      }
 
-  // ---------------- date helpers ----------------
-  function fmtDate(d){
-    const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
-    return `${y}-${m}-${day}`;
-  }
-  function normalizeDateStr(s){
-    if(!s) return '';
-    s = String(s).trim();
-    let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-    if(m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
-    m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
-    if(m) return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
-    m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-    if(m) return `${m[3]}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
-    const d = new Date(s);
-    return isNaN(d) ? '' : fmtDate(d);
-  }
-  function reportDateStr(r){
-    return normalizeDateStr(r.date) || normalizeDateStr(r.created_at) || '';
-  }
-  function getWeekStart(ref = new Date()){
-    const d = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate());
-    const day = d.getDay();
-    const diff = day === 0 ? -6 : 1 - day;
-    d.setDate(d.getDate() + diff);
-    return d;
-  }
-  function weekBounds(){
-    const start = getWeekStart();
-    const end = new Date(start); end.setDate(end.getDate() + 6);
-    return { start, end, startStr: fmtDate(start), endStr: fmtDate(end) };
-  }
-  function weekDayLabels(){
-    return ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
-  }
+      // ---------------- status / gate ----------------
+      function setStatus(state, text) {
+        const dot = $('statusDot'), label = $('statusText');
+        if (dot) dot.className = 'dot' + (state === 'live' ? ' live' : state === 'err' ? ' err' : '');
+        if (label) label.textContent = text;
+      }
 
-  // ---------------- aggregation ----------------
-  function aggregateByDate(reports){
-    const map = new Map();
-    reports.forEach(r => {
-      const key = reportDateStr(r);
-      if(!key) return;
-      map.set(key, (map.get(key) || 0) + 1);
-    });
-    return [...map.entries()].sort((a,b) => a[0] < b[0] ? -1 : 1);
-  }
+      function showError(msg) {
+        $('loadingState').style.display = 'none';
+        $('app').style.display = 'none';
+        $('gateErrorWrap').innerHTML = `<div class="gate-error">${escapeHtml(msg)}</div>`;
+      }
 
-  function playerName(p){ return typeof p === 'string' ? p : (p && (p.name||p.player)) || JSON.stringify(p); }
+      async function connectAndLoad() {
+        $('gateErrorWrap').innerHTML = '';
+        $('loadingState').style.display = 'block';
+        $('app').style.display = 'none';
+        setStatus('', 'загрузка…');
+        try {
+          const [res, balRes] = await Promise.all([
+            fetch(WORKER_URL + '/reports?limit=200'),
+            fetch(WORKER_URL + '/balances').catch(() => null)
+          ]);
+          if (!res.ok) { throw new Error('Ошибка сервера: HTTP ' + res.status); }
+          const data = await res.json();
+          if (!data.ok) { throw new Error(data.error || 'Неизвестная ошибка воркера.'); }
+          allReports = (data.reports || []).map(parseReport);
 
-  function renderScanThumb(s){
-    const url = typeof s === 'string' ? s : (s && s.url) || '';
-    const time = (s && typeof s === 'object' && s.time) ? s.time : '';
-    if(!url){ return `<span class="tag">${escapeHtml(JSON.stringify(s))}</span>`; }
-    return `<div class="scan-thumb" data-url="${escapeAttr(url)}" title="Открыть крупнее">
+          balancesMap = new Map();
+          if (balRes && balRes.ok) {
+            try {
+              const bdata = await balRes.json();
+              if (bdata && bdata.ok && Array.isArray(bdata.balances)) {
+                bdata.balances.forEach(b => {
+                  const key = (b.author || '').trim() || '—';
+                  balancesMap.set(key, Number(b.balance) || 0);
+                });
+              }
+            } catch (e) { /* эндпоинт /balances недоступен или вернул не JSON — считаем баланс 0 */ }
+          }
+
+          setStatus('live', 'подключено · ' + allReports.length + ' отчётов');
+          $('loadingState').style.display = 'none';
+          $('app').style.display = 'block';
+          renderRoute();
+        } catch (e) {
+          setStatus('err', 'ошибка подключения');
+          let hint = e.message || String(e);
+          if (hint.includes('Failed to fetch')) {
+            hint = 'Не удалось достучаться до воркера. Проверь, что он задеплоен и в нём включены CORS-заголовки (см. worker-with-cors.js).';
+          }
+          showError(hint);
+        }
+      }
+
+      function parseReport(r) {
+        let players = [], scans = [];
+        try { players = JSON.parse(r.players || '[]'); } catch (e) { }
+        try { scans = JSON.parse(r.scans || '[]'); } catch (e) { }
+        if (!Array.isArray(players)) players = [];
+        if (!Array.isArray(scans)) scans = [];
+        return { ...r, playersArr: players, scansArr: scans };
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      }
+      function escapeAttr(s) { return escapeHtml(s); }
+
+      function fmtMoney(n) {
+        const sign = n < 0 ? '−' : '';
+        return sign + Math.abs(n).toLocaleString('ru-RU');
+      }
+
+      // ---------------- date helpers ----------------
+      function fmtDate(d) {
+        const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      }
+      function normalizeDateStr(s) {
+        if (!s) return '';
+        s = String(s).trim();
+        let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+        if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+        m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+        if (m) return `${m[3]}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+        m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+        if (m) return `${m[3]}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
+        const d = new Date(s);
+        return isNaN(d) ? '' : fmtDate(d);
+      }
+      function reportDateStr(r) {
+        return normalizeDateStr(r.date) || normalizeDateStr(r.created_at) || '';
+      }
+      function getWeekStart(ref = new Date()) {
+        const d = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate());
+        const day = d.getDay();
+        const diff = day === 0 ? -6 : 1 - day;
+        d.setDate(d.getDate() + diff);
+        return d;
+      }
+      function weekBounds() {
+        const start = getWeekStart();
+        const end = new Date(start); end.setDate(end.getDate() + 6);
+        return { start, end, startStr: fmtDate(start), endStr: fmtDate(end) };
+      }
+      function weekDayLabels() {
+        return ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+      }
+
+      // ---------------- aggregation ----------------
+      function aggregateByDate(reports) {
+        const map = new Map();
+        reports.forEach(r => {
+          const key = reportDateStr(r);
+          if (!key) return;
+          map.set(key, (map.get(key) || 0) + 1);
+        });
+        return [...map.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1);
+      }
+
+      function playerName(p) { return typeof p === 'string' ? p : (p && (p.name || p.player)) || JSON.stringify(p); }
+
+      function renderScanThumb(s) {
+        const url = typeof s === 'string' ? s : (s && s.url) || '';
+        const time = (s && typeof s === 'object' && s.time) ? s.time : '';
+        if (!url) { return `<span class="tag">${escapeHtml(JSON.stringify(s))}</span>`; }
+        return `<div class="scan-thumb" data-url="${escapeAttr(url)}" title="Открыть крупнее">
       <img src="${escapeAttr(url)}" alt="Скан" loading="lazy">
-      <span class="scan-zoom">⤢</span>
+      <span class="scan-zoom"><svg class="ic" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" ><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5L9 7M2.5 13.5L7 9"/></svg></span>
       ${time ? `<span class="scan-time">${escapeHtml(time)}</span>` : ''}
     </div>`;
-  }
+      }
 
-  // ---------------- lightbox ----------------
-  const lightbox = $('lightbox'), lightboxImg = $('lightboxImg');
-  function openLightbox(url){
-    lightboxImg.src = url;
-    lightbox.classList.add('open');
-    document.body.style.overflow = 'hidden';
-  }
-  function closeLightbox(){
-    lightbox.classList.remove('open');
-    document.body.style.overflow = '';
-  }
-  if(lightbox){
-    $('lightboxClose').addEventListener('click', closeLightbox);
-    lightbox.addEventListener('click', (e) => { if(e.target === lightbox) closeLightbox(); });
-    document.addEventListener('keydown', (e) => { if(e.key === 'Escape') closeLightbox(); });
-    document.addEventListener('click', (e) => {
-      const thumb = e.target.closest('.scan-thumb');
-      if(thumb) openLightbox(thumb.dataset.url);
-    });
-  }
+      // ---------------- lightbox ----------------
+      const lightbox = $('lightbox'), lightboxImg = $('lightboxImg');
+      function openLightbox(url) {
+        lightboxImg.src = url;
+        lightbox.classList.add('open');
+        document.body.style.overflow = 'hidden';
+      }
+      function closeLightbox() {
+        lightbox.classList.remove('open');
+        document.body.style.overflow = '';
+      }
+      if (lightbox) {
+        $('lightboxClose').addEventListener('click', closeLightbox);
+        lightbox.addEventListener('click', (e) => { if (e.target === lightbox) closeLightbox(); });
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
+        document.addEventListener('click', (e) => {
+          const thumb = e.target.closest('.scan-thumb');
+          if (thumb) openLightbox(thumb.dataset.url);
+        });
+      }
 
-  function authorStats(name){
-    const mine = allReports.filter(r => (r.author && r.author.trim() ? r.author.trim() : '—') === name);
-    const wb = weekBounds();
-    const weekReports = mine.filter(r => {
-      const ds = reportDateStr(r);
-      return ds && ds >= wb.startStr && ds <= wb.endStr;
-    });
-    const totalPlayers = mine.reduce((s,r) => s + r.playersArr.length, 0);
-    const eventCount = new Map();
-    mine.forEach(r => { const e = r.event || '—'; eventCount.set(e, (eventCount.get(e)||0)+1); });
-    let favoriteEvent = '—', favMax = 0;
-    eventCount.forEach((v,k) => { if(v > favMax){ favMax = v; favoriteEvent = k; } });
-    const dailyWeek = weekDayLabels().map((_, i) => {
-      const d = new Date(wb.start); d.setDate(d.getDate() + i);
-      const ds = fmtDate(d);
-      return weekReports.filter(r => reportDateStr(r) === ds).length;
-    });
-    const lastDate = mine.reduce((m,r) => { const ds = reportDateStr(r); return ds > m ? ds : m; }, '');
-    const balance = balancesMap.get(name) || 0;
-    return { name, total: mine.length, week: weekReports.length, totalPlayers, favoriteEvent, dailyWeek, lastDate, list: mine, balance };
-  }
+      function authorStats(name) {
+        const mine = allReports.filter(r => (r.author && r.author.trim() ? r.author.trim() : '—') === name);
+        const wb = weekBounds();
+        const weekReports = mine.filter(r => {
+          const ds = reportDateStr(r);
+          return ds && ds >= wb.startStr && ds <= wb.endStr;
+        });
+        const totalPlayers = mine.reduce((s, r) => s + r.playersArr.length, 0);
+        const eventCount = new Map();
+        mine.forEach(r => { const e = r.event || '—'; eventCount.set(e, (eventCount.get(e) || 0) + 1); });
+        let favoriteEvent = '—', favMax = 0;
+        eventCount.forEach((v, k) => { if (v > favMax) { favMax = v; favoriteEvent = k; } });
+        const dailyWeek = weekDayLabels().map((_, i) => {
+          const d = new Date(wb.start); d.setDate(d.getDate() + i);
+          const ds = fmtDate(d);
+          return weekReports.filter(r => reportDateStr(r) === ds).length;
+        });
+        const lastDate = mine.reduce((m, r) => { const ds = reportDateStr(r); return ds > m ? ds : m; }, '');
+        const balance = balancesMap.get(name) || 0;
+        return { name, total: mine.length, week: weekReports.length, totalPlayers, favoriteEvent, dailyWeek, lastDate, list: mine, balance };
+      }
 
-  function allAuthorNames(){
-    return [...new Set(allReports.map(r => r.author && r.author.trim() ? r.author.trim() : '—'))].sort((a,b)=>a.localeCompare(b,'ru'));
-  }
+      function allAuthorNames() {
+        return [...new Set(allReports.map(r => r.author && r.author.trim() ? r.author.trim() : '—'))].sort((a, b) => a.localeCompare(b, 'ru'));
+      }
 
-  // ---------------- mini router (authors grid <-> author detail) ----------------
-  function navigate(name, param){
-    location.hash = '#/' + name + (param ? '/' + encodeURIComponent(param) : '');
-  }
-  function parseHash(){
-    const h = location.hash.replace(/^#\//,'');
-    if(!h){ return { name:'authors', param:null }; }
-    // Убираем параметры (&hwid=...) из hash перед парсингом
-    const cleanH = h.split('&')[0];
-    const parts = cleanH.split('/');
-    if(parts[0] === 'author' && parts[1]){ return { name:'author', param: decodeURIComponent(parts[1]) }; }
-    return { name:'authors', param:null };
-  }
-  function renderRoute(){
-    const route = parseHash();
-    $('view-authors').style.display = route.name === 'authors' ? 'block' : 'none';
-    $('view-author-detail').style.display = route.name === 'author' ? 'block' : 'none';
-    if(route.name === 'authors'){ renderAuthorsGrid(); }
-    else{ renderAuthorDetail(route.param); }
-  }
-  window.addEventListener('hashchange', () => { if(allReports.length) renderRoute(); });
-  $('backToAuthors').addEventListener('click', () => navigate('authors'));
+      // ---------------- mini router (authors grid <-> author detail) ----------------
+      function navigate(name, param) {
+        location.hash = '#/' + name + (param ? '/' + encodeURIComponent(param) : '');
+      }
+      function parseHash() {
+        const h = location.hash.replace(/^#\//, '');
+        if (!h) { return { name: 'authors', param: null }; }
+        // Убираем параметры (&hwid=...) из hash перед парсингом
+        const cleanH = h.split('&')[0];
+        const parts = cleanH.split('/');
+        if (parts[0] === 'author' && parts[1]) { return { name: 'author', param: decodeURIComponent(parts[1]) }; }
+        return { name: 'authors', param: null };
+      }
+      function renderRoute() {
+        const route = parseHash();
+        $('view-authors').style.display = route.name === 'authors' ? 'block' : 'none';
+        $('view-author-detail').style.display = route.name === 'author' ? 'block' : 'none';
+        if (route.name === 'authors') { renderAuthorsGrid(); }
+        else { renderAuthorDetail(route.param); }
+      }
+      window.addEventListener('hashchange', () => { if (allReports.length) renderRoute(); });
+      $('backToAuthors').addEventListener('click', () => navigate('authors'));
 
-  // ---------------- seal ring (SVG) ----------------
-  function sealRingSVG(size, strokeWidth, fraction, centerLabel, subLabel){
-    const r = (size - strokeWidth) / 2;
-    const c = 2 * Math.PI * r;
-    const off = c * (1 - Math.max(0, Math.min(1, fraction)));
-    return `
+      // ---------------- seal ring (SVG) ----------------
+      function sealRingSVG(size, strokeWidth, fraction, centerLabel, subLabel) {
+        const r = (size - strokeWidth) / 2;
+        const c = 2 * Math.PI * r;
+        const off = c * (1 - Math.max(0, Math.min(1, fraction)));
+        return `
       <svg class="seal-ring" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-        <circle class="track" cx="${size/2}" cy="${size/2}" r="${r}" stroke-width="${strokeWidth}"></circle>
-        <circle class="prog" cx="${size/2}" cy="${size/2}" r="${r}" stroke-width="${strokeWidth}"
+        <circle class="track" cx="${size / 2}" cy="${size / 2}" r="${r}" stroke-width="${strokeWidth}"></circle>
+        <circle class="prog" cx="${size / 2}" cy="${size / 2}" r="${r}" stroke-width="${strokeWidth}"
           stroke-dasharray="${c}" stroke-dashoffset="${c}"></circle>
       </svg>
       <div class="seal-ring-num" style="flex-direction:column; line-height:1;">
-        <div style="font-size:${size*0.28}px;">${centerLabel}</div>
+        <div style="font-size:${size * 0.28}px;">${centerLabel}</div>
         ${subLabel ? `<div style="font-size:9px; font-weight:500; color:var(--text-faint); letter-spacing:.4px; margin-top:2px;">${subLabel}</div>` : ''}
       </div>`;
-  }
-  function animateSealRing(wrapEl, size, strokeWidth, fraction){
-    const r = (size - strokeWidth) / 2;
-    const c = 2 * Math.PI * r;
-    const off = c * (1 - Math.max(0, Math.min(1, fraction)));
-    const prog = wrapEl.querySelector('.prog');
-    if(!prog) return;
-    requestAnimationFrame(() => { prog.style.strokeDashoffset = off; });
-  }
+      }
+      function animateSealRing(wrapEl, size, strokeWidth, fraction) {
+        const r = (size - strokeWidth) / 2;
+        const c = 2 * Math.PI * r;
+        const off = c * (1 - Math.max(0, Math.min(1, fraction)));
+        const prog = wrapEl.querySelector('.prog');
+        if (!prog) return;
+        requestAnimationFrame(() => { prog.style.strokeDashoffset = off; });
+      }
 
-  function chartTheme(){
-    return { color: '#929aab', grid: 'rgba(255,255,255,0.05)', font: { family: 'Inter', size: 11 } };
-  }
+      function chartTheme() {
+        return { color: '#6b665a', grid: 'rgba(22,21,15,0.09)', font: { family: 'IBM Plex Sans', size: 11 } };
+      }
 
-  function gradientFill(ctx, chartArea, colorTop, colorBottom){
-    if(!chartArea) return colorTop;
-    const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-    g.addColorStop(0, colorTop);
-    g.addColorStop(1, colorBottom);
-    return g;
-  }
+      function gradientFill(ctx, chartArea, colorTop, colorBottom) {
+        if (!chartArea) return colorTop;
+        const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+        g.addColorStop(0, colorTop);
+        g.addColorStop(1, colorBottom);
+        return g;
+      }
 
-  const glowPlugin = {
-    id: 'softGlow',
-    beforeDatasetsDraw(chart, args, opts){
-      chart.ctx.save();
-      chart.ctx.shadowColor = opts.color || 'rgba(79,195,176,.35)';
-      chart.ctx.shadowBlur = opts.blur || 10;
-    },
-    afterDatasetsDraw(chart){ chart.ctx.restore(); }
-  };
-  if(typeof Chart !== 'undefined'){ Chart.register(glowPlugin); Chart.defaults.font.family = 'Inter'; }
+      const glowPlugin = {
+        id: 'softGlow',
+        beforeDatasetsDraw(chart, args, opts) {
+          chart.ctx.save();
+          chart.ctx.shadowColor = opts.color || 'rgba(200,56,31,.35)';
+          chart.ctx.shadowBlur = opts.blur || 10;
+        },
+        afterDatasetsDraw(chart) { chart.ctx.restore(); }
+      };
+      if (typeof Chart !== 'undefined') { Chart.register(glowPlugin); Chart.defaults.font.family = 'IBM Plex Sans'; }
 
-  function baseTooltip(){
-    return {
-      backgroundColor: '#1b202a', borderColor: '#2a3140', borderWidth: 1,
-      titleColor: '#ece7da', bodyColor: '#c8cdd8', padding: 10, cornerRadius: 8,
-      titleFont: { family:'Inter', weight:'600', size:12 }, bodyFont: { family:'JetBrains Mono', size:11.5 },
-      displayColors: false,
-    };
-  }
+      function baseTooltip() {
+        return {
+          backgroundColor: '#16150f', borderColor: '#16150f', borderWidth: 1,
+          titleColor: '#f5f2ea', bodyColor: '#d8d2c4', padding: 10, cornerRadius: 0,
+          titleFont: { family: 'IBM Plex Sans', weight: '600', size: 12 }, bodyFont: { family: 'IBM Plex Mono', size: 11.5 },
+          displayColors: false,
+        };
+      }
 
-  function renderReportsTable(list, tbodyEl, emptyEl){
-    emptyEl.style.display = list.length ? 'none' : 'block';
-    tbodyEl.innerHTML = list.map((r, i) => {
-      const when = (r.date || '') + (r.time ? ' ' + r.time : '');
-      return `
+      function renderReportsTable(list, tbodyEl, emptyEl) {
+        emptyEl.style.display = list.length ? 'none' : 'block';
+        tbodyEl.innerHTML = list.map((r, i) => {
+          const when = (r.date || '') + (r.time ? ' ' + r.time : '');
+          return `
       <tr data-idx="${i}" class="report-row">
         <td class="mono">${escapeHtml(when || r.created_at || '—')}</td>
         <td>${escapeHtml(r.event || '—')}</td>
@@ -636,56 +585,56 @@
           </div>
         </td>
       </tr>`;
-    }).join('');
+        }).join('');
 
-    tbodyEl.querySelectorAll('.report-row').forEach(row => {
-      row.addEventListener('click', () => {
-        const idx = row.getAttribute('data-idx');
-        const detail = tbodyEl.querySelector(`[data-detail="${idx}"]`);
-        const isOpen = detail.style.display !== 'none';
-        if(!isOpen){
-          detail.style.display = 'table-row';
-          if(hasGsap && !reduceMotion){
-            gsap.fromTo(detail.querySelector('.detail-inner'), { opacity:0, y:-6 }, { opacity:1, y:0, duration:.35, ease:'power2.out' });
-          }
-        } else {
-          detail.style.display = 'none';
-        }
-        row.classList.toggle('expanded', !isOpen);
-      });
-    });
+        tbodyEl.querySelectorAll('.report-row').forEach(row => {
+          row.addEventListener('click', () => {
+            const idx = row.getAttribute('data-idx');
+            const detail = tbodyEl.querySelector(`[data-detail="${idx}"]`);
+            const isOpen = detail.style.display !== 'none';
+            if (!isOpen) {
+              detail.style.display = 'table-row';
+              if (hasGsap && !reduceMotion) {
+                gsap.fromTo(detail.querySelector('.detail-inner'), { opacity: 0, y: -6 }, { opacity: 1, y: 0, duration: .35, ease: 'power2.out' });
+              }
+            } else {
+              detail.style.display = 'none';
+            }
+            row.classList.toggle('expanded', !isOpen);
+          });
+        });
 
-    revealStagger(tbodyEl.querySelectorAll('.report-row'), { duration:.45, stagger:.025, y:12 });
-  }
+        revealStagger(tbodyEl.querySelectorAll('.report-row'), { duration: .45, stagger: .025, y: 12 });
+      }
 
-  // ---------------- authors grid render ----------------
-  function renderAuthorsGrid(){
-    const wb = weekBounds();
-    $('weekRangeLabel').textContent = `неделя: ${wb.startStr} — ${wb.endStr}`;
-    const q = ($('authorsSearch').value || '').trim().toLowerCase();
-    const names = allAuthorNames().filter(n => !q || n.toLowerCase().includes(q));
-    const stats = names.map(authorStats);
-    stats.sort((a,b) => b.week - a.week || b.total - a.total);
-    const maxWeek = Math.max(1, ...stats.map(s => s.week));
+      // ---------------- authors grid render ----------------
+      function renderAuthorsGrid() {
+        const wb = weekBounds();
+        $('weekRangeLabel').textContent = `неделя: ${wb.startStr} — ${wb.endStr}`;
+        const q = ($('authorsSearch').value || '').trim().toLowerCase();
+        const names = allAuthorNames().filter(n => !q || n.toLowerCase().includes(q));
+        const stats = names.map(authorStats);
+        stats.sort((a, b) => b.week - a.week || b.total - a.total);
+        const maxWeek = Math.max(1, ...stats.map(s => s.week));
 
-    $('authorsEmpty').style.display = stats.length ? 'none' : 'block';
-    $('authorsGrid').innerHTML = stats.map((s, idx) => {
-      const isLeader = idx === 0 && s.week > 0 && !q;
-      const ringSize = isLeader ? 78 : 58;
-      const initials = s.name === '—' ? '?' : s.name.slice(0,2).toUpperCase();
-      const todayIdx = (() => { const d = new Date().getDay(); return d === 0 ? 6 : d-1; })();
-      const bars = s.dailyWeek.map((v, i) => {
-        const h = v > 0 ? Math.min(100, 30 + v*25) : 8;
-        return `<div class="bar ${v>0?'hit':''} ${i===todayIdx?'today':''}" style="height:${h}%;" title="${weekDayLabels()[i]}: ${v}"></div>`;
-      }).join('');
-      return `
+        $('authorsEmpty').style.display = stats.length ? 'none' : 'block';
+        $('authorsGrid').innerHTML = stats.map((s, idx) => {
+          const isLeader = idx === 0 && s.week > 0 && !q;
+          const ringSize = isLeader ? 78 : 58;
+          const initials = s.name === '—' ? '?' : s.name.slice(0, 2).toUpperCase();
+          const todayIdx = (() => { const d = new Date().getDay(); return d === 0 ? 6 : d - 1; })();
+          const bars = s.dailyWeek.map((v, i) => {
+            const h = v > 0 ? Math.min(100, 30 + v * 25) : 8;
+            return `<div class="bar ${v > 0 ? 'hit' : ''} ${i === todayIdx ? 'today' : ''}" style="height:${h}%;" title="${weekDayLabels()[i]}: ${v}"></div>`;
+          }).join('');
+          return `
       <button class="glass author-card js-reveal ${isLeader ? 'leader' : ''}" data-author="${escapeAttr(s.name)}" data-week="${s.week}" data-max="${maxWeek}" data-ring="${ringSize}">
         <div class="top-row">
           <div class="seal-ring-wrap" style="width:${ringSize}px;height:${ringSize}px;">
-            ${sealRingSVG(ringSize, isLeader ? 7 : 6, s.week/maxWeek, s.week, 'МП')}
+            ${sealRingSVG(ringSize, isLeader ? 7 : 6, s.week / maxWeek, s.week, 'МП')}
           </div>
           <div>
-            ${isLeader ? '<div class="leader-tag">★ Лидер недели</div>' : ''}
+            ${isLeader ? '<div class="leader-tag"><svg class="ic" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" ><path d="M8 1.8l1.9 4 4.3.5-3.2 3 .9 4.3L8 11.4l-3.9 2.2.9-4.3-3.2-3 4.3-.5z" fill="currentColor"/></svg> Лидер недели</div>' : ''}
             <div class="author-name">${escapeHtml(s.name)}</div>
             <div class="author-sub">${initials} · всего отчётов: ${s.total}</div>
           </div>
@@ -699,80 +648,81 @@
           <span>Баланс: <b class="${s.balance < 0 ? 'balance-neg' : 'balance-pos'}">${fmtMoney(s.balance)}</b></span>
         </div>
       </button>`;
-    }).join('');
+        }).join('');
 
-    $('authorsGrid').querySelectorAll('.author-card').forEach(card => {
-      card.addEventListener('click', () => navigate('author', card.dataset.author));
-      const wrap = card.querySelector('.seal-ring-wrap');
-      animateSealRing(wrap, Number(card.dataset.ring), card.dataset.ring == '78' ? 7 : 6, Number(card.dataset.week)/Number(card.dataset.max || 1));
-    });
-    magnetTilt('.author-card');
-    revealStagger('#authorsGrid .author-card', { stagger: .05, y: 26 });
-  }
-  $('authorsSearch').addEventListener('input', renderAuthorsGrid);
+        $('authorsGrid').querySelectorAll('.author-card').forEach(card => {
+          card.addEventListener('click', () => navigate('author', card.dataset.author));
+          const wrap = card.querySelector('.seal-ring-wrap');
+          animateSealRing(wrap, Number(card.dataset.ring), card.dataset.ring == '78' ? 7 : 6, Number(card.dataset.week) / Number(card.dataset.max || 1));
+        });
+        magnetTilt('.author-card');
+        revealStagger('#authorsGrid .author-card', { stagger: .05, y: 26 });
+      }
+      $('authorsSearch').addEventListener('input', renderAuthorsGrid);
 
-  // ---------------- author detail render ----------------
-  function renderAuthorDetail(name){
-    const s = authorStats(name);
-    const maxWeek = Math.max(1, ...allAuthorNames().map(n => authorStats(n).week));
+      // ---------------- author detail render ----------------
+      function renderAuthorDetail(name) {
+        const s = authorStats(name);
+        const maxWeek = Math.max(1, ...allAuthorNames().map(n => authorStats(n).week));
 
-    $('authorName').textContent = s.name;
-    $('authorSub').textContent = `Последний отчёт: ${s.lastDate || '—'}`;
-    countUp($('statWeek'), s.week);
-    countUp($('statTotal'), s.total, { delay: .05 });
-    countUp($('statPlayers'), s.totalPlayers, { delay: .1 });
-    $('statFav').textContent = s.favoriteEvent || '—';
-    const balEl = $('statBalance');
-    balEl.classList.remove('gold','teal','crimson');
-    balEl.classList.add(s.balance < 0 ? 'crimson' : 'gold');
-    if(!hasGsap || reduceMotion){
-      balEl.textContent = fmtMoney(s.balance);
-    } else {
-      const obj = { v: 0 };
-      gsap.to(obj, { v: s.balance, duration: 1.2, delay:.15, ease:'power2.out', onUpdate(){ balEl.textContent = fmtMoney(Math.round(obj.v)); } });
-    }
-
-    $('heroRingWrap').style.width = '96px';
-    $('heroRingWrap').style.height = '96px';
-    $('heroRingWrap').innerHTML = sealRingSVG(96, 8, s.week/maxWeek, s.week, 'МП / нед.');
-    animateSealRing($('heroRingWrap'), 96, 8, s.week/maxWeek);
-
-    // timeline chart for this author
-    if(typeof Chart !== 'undefined'){
-      const theme = chartTheme();
-      const byDate = aggregateByDate(s.list);
-      if(charts.authorTimeline) charts.authorTimeline.destroy();
-      charts.authorTimeline = new Chart($('chartAuthorTimeline'), {
-        type: 'line',
-        data: {
-          labels: byDate.map(d => d[0]),
-          datasets: [{
-            label: 'Отчётов', data: byDate.map(d => d[1]),
-            borderColor: '#d4a24e',
-            backgroundColor: (ctx) => gradientFill(ctx.chart.ctx, ctx.chart.chartArea, 'rgba(212,162,78,0.3)', 'rgba(212,162,78,0.0)'),
-            fill:true, tension:0.42, pointRadius:0, pointHoverRadius:5,
-            pointBackgroundColor:'#f2c877', borderWidth:2.5, cubicInterpolationMode:'monotone',
-          }]
-        },
-        options: {
-          responsive:true, maintainAspectRatio:false, animation:{ duration:900, easing:'easeOutQuart' },
-          interaction:{ intersect:false, mode:'index' },
-          plugins:{ legend:{ display:false }, tooltip: baseTooltip(), softGlow:{ color:'rgba(212,162,78,.35)', blur:14 } },
-          scales:{
-            x:{ ticks:{ color: theme.color, font: theme.font, maxRotation:0, autoSkip:true, maxTicksLimit:8 }, grid:{ display:false }, border:{ color:'#2a3140' } },
-            y:{ beginAtZero:true, ticks:{ color: theme.color, font: theme.font, precision:0 }, grid:{ color: theme.grid }, border:{ display:false } }
-          }
+        $('authorName').textContent = s.name;
+        $('authorSub').textContent = `Последний отчёт: ${s.lastDate || '—'}`;
+        countUp($('statWeek'), s.week);
+        countUp($('statTotal'), s.total, { delay: .05 });
+        countUp($('statPlayers'), s.totalPlayers, { delay: .1 });
+        $('statFav').textContent = s.favoriteEvent || '—';
+        const balEl = $('statBalance');
+        balEl.classList.remove('gold', 'teal', 'crimson');
+        balEl.classList.add(s.balance < 0 ? 'crimson' : 'gold');
+        if (!hasGsap || reduceMotion) {
+          balEl.textContent = fmtMoney(s.balance);
+        } else {
+          const obj = { v: 0 };
+          gsap.to(obj, { v: s.balance, duration: 1.2, delay: .15, ease: 'power2.out', onUpdate() { balEl.textContent = fmtMoney(Math.round(obj.v)); } });
         }
-      });
-    }
 
-    renderReportsTable(s.list.slice().sort((a,b) => (b.created_at||'') < (a.created_at||'') ? -1 : 1), $('authorTableBody'), $('authorEmptyState'));
-    revealStagger('.js-reveal', { stagger: .06 });
-  }
+        $('heroRingWrap').style.width = '96px';
+        $('heroRingWrap').style.height = '96px';
+        $('heroRingWrap').innerHTML = sealRingSVG(96, 8, s.week / maxWeek, s.week, 'МП / нед.');
+        animateSealRing($('heroRingWrap'), 96, 8, s.week / maxWeek);
 
-  // ---------------- init ----------------
-  connectAndLoad();
-})();
-</script>
+        // timeline chart for this author
+        if (typeof Chart !== 'undefined') {
+          const theme = chartTheme();
+          const byDate = aggregateByDate(s.list);
+          if (charts.authorTimeline) charts.authorTimeline.destroy();
+          charts.authorTimeline = new Chart($('chartAuthorTimeline'), {
+            type: 'line',
+            data: {
+              labels: byDate.map(d => d[0]),
+              datasets: [{
+                label: 'Отчётов', data: byDate.map(d => d[1]),
+                borderColor: '#1f5a46',
+                backgroundColor: (ctx) => gradientFill(ctx.chart.ctx, ctx.chart.chartArea, 'rgba(31,90,70,0.3)', 'rgba(31,90,70,0.0)'),
+                fill: true, tension: 0.42, pointRadius: 0, pointHoverRadius: 5,
+                pointBackgroundColor: '#2f7d63', borderWidth: 2.5, cubicInterpolationMode: 'monotone',
+              }]
+            },
+            options: {
+              responsive: true, maintainAspectRatio: false, animation: { duration: 900, easing: 'easeOutQuart' },
+              interaction: { intersect: false, mode: 'index' },
+              plugins: { legend: { display: false }, tooltip: baseTooltip(), softGlow: { color: 'rgba(31,90,70,.35)', blur: 14 } },
+              scales: {
+                x: { ticks: { color: theme.color, font: theme.font, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { display: false }, border: { color: '#16150f' } },
+                y: { beginAtZero: true, ticks: { color: theme.color, font: theme.font, precision: 0 }, grid: { color: theme.grid }, border: { display: false } }
+              }
+            }
+          });
+        }
+
+        renderReportsTable(s.list.slice().sort((a, b) => (b.created_at || '') < (a.created_at || '') ? -1 : 1), $('authorTableBody'), $('authorEmptyState'));
+        revealStagger('.js-reveal', { stagger: .06 });
+      }
+
+      // ---------------- init ----------------
+      connectAndLoad();
+    })();
+  </script>
 </body>
+
 </html>
