@@ -6,7 +6,7 @@
   var WORKER_URL = "https://bitter-breeze-2c7b.vitadensikloh.workers.dev";
   // Публичный ключ виджета Turnstile. Тестовый ключ ниже всегда пропускает —
   // замените на свой из панели Cloudflare (Turnstile → Add widget).
-  var SITE_KEY = "0x4AAAAAAFNw2v5BkvIQlJNK";
+  var SITE_KEY = "1x00000000000000000000AA";
 
   var pending = null;
   var scriptPromise = null;
@@ -80,7 +80,7 @@
             }).then(function (r) { return r.json().catch(function () { return null; }); })
               .then(function (d) {
                 if (d && d.ok) { finish(true); return; }
-                setErr('Проверка не пройдена. Попробуйте ещё раз.');
+                setErr('Проверка не пройдена' + (d && d.error ? ' (' + d.error + (d.codes && d.codes.length ? ': ' + d.codes.join(', ') : '') + ')' : '') + '. Попробуйте ещё раз.');
                 try { window.turnstile.reset(widgetId); } catch (e) { }
               })
               .catch(function () {
