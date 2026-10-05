@@ -53,7 +53,6 @@ a{color:inherit;text-decoration:none}
 .hero-bg,.aurora,.scroll-mouse,.hero-spacer{display:none!important}
 
 /* ---------- FX layer (fx.js) ---------- */
-.fx-orb{position:fixed;top:0;left:0;width:400px;height:400px;z-index:-1;pointer-events:none;border-radius:50%;background:radial-gradient(circle,var(--glow),transparent 62%);opacity:.5;will-change:transform}
 .fx-progress{position:fixed;top:0;left:0;right:0;height:2px;z-index:200;background:var(--grad);transform:scaleX(0);transform-origin:0 50%;box-shadow:0 0 12px var(--red)}
 .fx-rip{position:absolute;border-radius:50%;background:rgba(255,255,255,.45);transform:scale(0);animation:rip .6s ease-out forwards;pointer-events:none}
 @keyframes rip{to{transform:scale(4);opacity:0}}
@@ -81,9 +80,6 @@ main>.loading,.report-wrap,.plan-header{animation:rise .8s .1s both}
 
 /* ---------- PANELS & GRID ---------- */
 .glass,.panel{background:var(--glass);border:1px solid var(--glass-b);border-radius:18px;position:relative;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 10px 40px -18px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.06);transition:border-color .3s,box-shadow .3s}
-.glass::after,.panel::after,.time-slot::after{content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:0;transition:opacity .3s;
-  background:radial-gradient(240px circle at var(--mx,50%) var(--my,50%),var(--glow),transparent 70%)}
-.glass:hover::after,.panel:hover::after,.time-slot:hover::after{opacity:.55}
 .glass:hover,.panel:hover{border-color:color-mix(in srgb,var(--red) 55%,transparent)}
 .bento{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px;margin-bottom:28px}
 .bento>.glass{min-width:0}
