@@ -31,7 +31,7 @@
     st.id = 'humanCheckStyles';
     st.textContent =
       '.hc-overlay{position:fixed;inset:0;z-index:4000;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(22,21,15,.72)}' +
-      '.hc-card{width:100%;max-width:400px;background:var(--paper-2,#f5f2ea);color:var(--ink,#16150f);border:1px solid var(--ink,#16150f);box-shadow:8px 8px 0 var(--ink,#16150f);padding:26px}' +
+      '.hc-card{width:100%;max-width:400px;background:var(--paper-2,#f5f2ea);color:var(--ink,#16150f);border:1px solid var(--ink,#16150f);box-shadow:0 30px 80px rgba(0,0,0,.5);border-radius:20px;backdrop-filter:blur(20px);padding:26px}' +
       '.hc-card h3{font-family:var(--serif,Georgia,serif);font-size:24px;font-weight:700;line-height:1.1;margin-bottom:10px;padding-bottom:10px;border-bottom:2px solid var(--ink,#16150f)}' +
       '.hc-card p{font-size:13px;line-height:1.6;color:var(--ink-2,#4a463b);margin-bottom:16px}' +
       '.hc-widget{min-height:65px;display:flex;justify-content:center;margin-bottom:12px}' +

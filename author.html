@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arizona Event CRM · Авторы</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Spectral:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Sora:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="icon" href="favicon.png" sizes="64x64" type="image/png">
@@ -24,7 +24,7 @@
 <body>
 
   <header>
-    <div class="brand"><svg class="brand-mark" viewBox="0 0 30 30" fill="none"><rect x="1.5" y="1.5" width="27" height="27" stroke="currentColor" stroke-width="2"/><path d="M1.5 28.5L28.5 1.5" stroke="currentColor" stroke-width="2"/><circle cx="21" cy="21" r="4.5" fill="#c8381f"/></svg><div class="brand-copy">
+    <div class="brand"><svg class="brand-mark" viewBox="0 0 30 30" fill="none"><rect x="1.5" y="1.5" width="27" height="27" stroke="currentColor" stroke-width="2"/><path d="M1.5 28.5L28.5 1.5" stroke="currentColor" stroke-width="2"/><circle cx="21" cy="21" r="4.5" fill="#8b6cff"/></svg><div class="brand-copy">
         <h1 id="brandTitle">Arizona Event CRM</h1>
         <div class="subtitle" id="brandSub">Журнал отчётов о проведенных МП</div>
       </div>
@@ -550,7 +550,7 @@
         id: 'softGlow',
         beforeDatasetsDraw(chart, args, opts) {
           chart.ctx.save();
-          chart.ctx.shadowColor = opts.color || 'rgba(200,56,31,.35)';
+          chart.ctx.shadowColor = opts.color || 'rgba(139,108,255,.35)';
           chart.ctx.shadowBlur = opts.blur || 10;
         },
         afterDatasetsDraw(chart) { chart.ctx.restore(); }
@@ -703,16 +703,16 @@
               labels: byDate.map(d => d[0]),
               datasets: [{
                 label: 'Отчётов', data: byDate.map(d => d[1]),
-                borderColor: '#1f5a46',
-                backgroundColor: (ctx) => gradientFill(ctx.chart.ctx, ctx.chart.chartArea, 'rgba(31,90,70,0.3)', 'rgba(31,90,70,0.0)'),
+                borderColor: '#22d3ee',
+                backgroundColor: (ctx) => gradientFill(ctx.chart.ctx, ctx.chart.chartArea, 'rgba(34,211,238,0.3)', 'rgba(34,211,238,0.0)'),
                 fill: true, tension: 0.42, pointRadius: 0, pointHoverRadius: 5,
-                pointBackgroundColor: '#2f7d63', borderWidth: 2.5, cubicInterpolationMode: 'monotone',
+                pointBackgroundColor: '#67e8f9', borderWidth: 2.5, cubicInterpolationMode: 'monotone',
               }]
             },
             options: {
               responsive: true, maintainAspectRatio: false, animation: { duration: 900, easing: 'easeOutQuart' },
               interaction: { intersect: false, mode: 'index' },
-              plugins: { legend: { display: false }, tooltip: baseTooltip(), softGlow: { color: 'rgba(31,90,70,.35)', blur: 14 } },
+              plugins: { legend: { display: false }, tooltip: baseTooltip(), softGlow: { color: 'rgba(34,211,238,.35)', blur: 14 } },
               scales: {
                 x: { ticks: { color: theme.color, font: theme.font, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { display: false }, border: { color: cv('--ink') } },
                 y: { beginAtZero: true, ticks: { color: theme.color, font: theme.font, precision: 0 }, grid: { color: theme.grid }, border: { display: false } }
@@ -745,6 +745,7 @@
   paint();root.appendChild(b);
 })();
 </script>
+<script src="fx.js"></script>
 </body>
 
 </html>
