@@ -49,6 +49,231 @@ for _, name in ipairs({
 end
 pcall(os.remove, SCRIPT_DIR .. "espl_avatar.png")
 
+CFG = {
+    file = DATA_DIR .. "settings.json",
+    data = {},
+    keyorder = {
+        "version", "hwid",
+        "paths", "screens",
+        "appearance", "theme", "slot_color",
+        "helper", "auto_mode", "anti_mode", "cursor_key", "window_pos", "x", "y",
+        "tutorial_done", "last_teleport", "end_epoch", "total",
+        "last_gun", "radius", "id", "ammo",
+        "debug",
+        "reminders", "date", "time", "title", "before", "notify_at", "at",
+        "avatar", "png_b64",
+    },
+}
+
+function CFG.s_enc(v)
+    if type(v) ~= "string" or v == "" then return v end
+    return to_utf8(v)
+end
+
+function CFG.s_dec(v)
+    if type(v) ~= "string" or v == "" then return v end
+    local ok, r = pcall(function() return u8:decode(v) end)
+    if ok and r then return r end
+    return v
+end
+
+function CFG.b64enc(raw)
+    local ok, m = pcall(require, "mime")
+    if ok and type(m) == "table" and m.b64 then
+        local ok2, r = pcall(m.b64, raw)
+        if ok2 and type(r) == "string" and #r > 0 then return r end
+    end
+    return nil
+end
+
+function CFG.b64dec(str)
+    local ok, m = pcall(require, "mime")
+    if ok and type(m) == "table" and m.unb64 then
+        local ok2, r = pcall(m.unb64, str)
+        if ok2 and type(r) == "string" and #r > 0 then return r end
+    end
+    return nil
+end
+
+function CFG.get(path, def)
+    local v = CFG.data
+    for k in tostring(path):gmatch("[^%.]+") do
+        if type(v) ~= "table" then return def end
+        v = v[k]
+    end
+    if v == nil then return def end
+    return v
+end
+
+function CFG.set(path, value, nosave)
+    local keys = {}
+    for k in tostring(path):gmatch("[^%.]+") do keys[#keys + 1] = k end
+    local t = CFG.data
+    for i = 1, #keys - 1 do
+        if type(t[keys[i]]) ~= "table" then t[keys[i]] = {} end
+        t = t[keys[i]]
+    end
+    t[keys[#keys]] = value
+    if not nosave then CFG.save() end
+end
+
+function CFG.save()
+    CFG.data.version = 1
+    local ok, body = pcall(dkjson.encode, CFG.data, { indent = true, keyorder = CFG.keyorder })
+    if not ok or type(body) ~= "string" then return false end
+    local tmp = CFG.file .. ".tmp"
+    local f = io.open(tmp, "wb")
+    if not f then return false end
+    f:write(body)
+    f:close()
+    os.remove(CFG.file)
+    local okr = os.rename(tmp, CFG.file) and true or false
+    if okr then
+        local ok_a, attr = pcall(lfs.attributes, CFG.file)
+        CFG.mtime = ok_a and attr and attr.modification or nil
+    end
+    return okr
+end
+
+function CFG.reload_if_changed()
+    local ok_a, attr = pcall(lfs.attributes, CFG.file)
+    if not ok_a or not attr then return false end
+    if attr.modification == CFG.mtime then return false end
+    CFG.mtime = attr.modification
+    local f = io.open(CFG.file, "rb")
+    if not f then return false end
+    local c = f:read("*a")
+    f:close()
+    local ok, d = pcall(dkjson.decode, c or "")
+    if ok and type(d) == "table" then
+        CFG.data = d
+        DC.trace("settings.json changed on disk, reloaded")
+        return true
+    end
+    DC.trace("settings.json changed but is not valid JSON, ignored")
+    return false
+end
+
+function CFG.load()
+    for _, p in ipairs({ CFG.file, CFG.file .. ".tmp" }) do
+        local f = io.open(p, "rb")
+        if f then
+            local c = f:read("*a")
+            f:close()
+            local ok, d = pcall(dkjson.decode, c or "")
+            if ok and type(d) == "table" then
+                CFG.data = d
+                local ok_a, attr = pcall(lfs.attributes, p)
+                CFG.mtime = ok_a and attr and attr.modification or nil
+                return true
+            end
+        end
+    end
+    CFG.data = {}
+    return false
+end
+
+function CFG.migrate()
+    local used = {}
+    local function rd(name)
+        local f = io.open(DATA_DIR .. name, "rb")
+        if not f then return nil end
+        local c = f:read("*a")
+        f:close()
+        used[#used + 1] = name
+        return c or ""
+    end
+    local function unset(path) return CFG.get(path) == nil end
+
+    local c = rd("hwid_cache.txt")
+    if c then
+        local h = c:match("[^\r\n]+")
+        if h and unset("hwid") then CFG.set("hwid", h, true) end
+    end
+
+    c = rd("screens_path_cache.txt")
+    if c then
+        local p = c:match("[^\r\n]+")
+        if p and unset("paths.screens") then CFG.set("paths.screens", CFG.s_enc(p), true) end
+    end
+
+    c = rd("theme_color.txt")
+    if c then
+        local h = c:match("%x%x%x%x%x%x")
+        if h and unset("appearance.theme") then CFG.set("appearance.theme", h:upper(), true) end
+    end
+
+    c = rd("slot_color.txt")
+    if c then
+        local h = c:match("%x%x%x%x%x%x")
+        if h and unset("appearance.slot_color") then CFG.set("appearance.slot_color", h:upper(), true) end
+    end
+
+    c = rd("tp_key.txt")
+    if c then
+        local vk = tonumber(c:match("%d+"))
+        if vk and vk >= 8 and vk <= 254 and unset("helper.cursor_key") then CFG.set("helper.cursor_key", vk, true) end
+    end
+
+    c = rd("tp_pos.txt")
+    if c then
+        local x, y = c:match("(-?[%d%.]+)%s+(-?[%d%.]+)")
+        x, y = tonumber(x), tonumber(y)
+        if x and y and unset("helper.window_pos") then CFG.set("helper.window_pos", { x = x, y = y }, true) end
+    end
+
+    c = rd("tp_last.txt")
+    if c then
+        local e, t = c:match("(%d+)%s+(%d+)")
+        if e and t and unset("helper.last_teleport") then
+            CFG.set("helper.last_teleport", { end_epoch = tonumber(e), total = tonumber(t) }, true)
+        end
+    end
+
+    c = rd("anti_mode.txt")
+    if c then
+        local v = tonumber(c:match("[123]"))
+        if v and unset("helper.anti_mode") then CFG.set("helper.anti_mode", v, true) end
+    end
+
+    c = rd("auto_mode.txt")
+    if c then
+        if c:find("[01]") and unset("helper.auto_mode") then
+            CFG.set("helper.auto_mode", c:find("1", 1, true) ~= nil, true)
+        end
+    end
+
+    c = rd("gun_last.txt")
+    if c then
+        local r, id, a = c:match("(%d+)%s+(%d+)%s+(%d+)")
+        r, id, a = tonumber(r), tonumber(id), tonumber(a)
+        if r and id and a and unset("helper.last_gun") then
+            CFG.set("helper.last_gun", { radius = r, id = id, ammo = a }, true)
+        end
+    end
+
+    c = rd("debug_mode.txt")
+    if c and unset("debug") then CFG.set("debug", c:find("1", 1, true) ~= nil, true) end
+
+    c = rd("tutorial_done.txt")
+    if c and unset("helper.tutorial_done") then CFG.set("helper.tutorial_done", true, true) end
+
+    c = rd("espl_avatar.png")
+    if c then
+        if #c >= 100 and (c:sub(1, 4) == "\137PNG" or c:sub(1, 2) == "\255\216") and unset("avatar.png_b64") then
+            local b = CFG.b64enc(c)
+            if b then CFG.set("avatar.png_b64", b, true) end
+        end
+    end
+
+    if #used > 0 and CFG.save() then
+        for _, n in ipairs(used) do os.remove(DATA_DIR .. n) end
+    end
+end
+
+CFG.load()
+pcall(CFG.migrate)
+
 local CUSTOM_FONT_URL   = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/eventscrin.ttf"
 local CUSTOM_FONT_FILE  = DATA_DIR .. "eventscrin.ttf"
 local CUSTOM_FONT_SIZE  = 16.0
@@ -153,7 +378,7 @@ local WORKER_URL_FALLBACK = "https://nehto--9aade89ea49811f1a9051607ee4eb77e.web
 local active_worker_url = WORKER_URL_PRIMARY
 local SCAN_RADIUS  = 200.0
 
-local SCRIPT_VERSION      = "1.91"
+local SCRIPT_VERSION      = "2.0"
 local VERSION_CHECK_URL   = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/version.txt"
 local UPDATE_DOWNLOAD_URL = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/event.lua"
 
@@ -192,18 +417,9 @@ DC.LOG_MAX   = 20 * 1024 * 1024
 DC.LOG_FILE  = nil
 DC.log_bytes = 0
 
-DC.DEBUG_FILE = DATA_DIR .. "debug_mode.txt"
-DC.DEBUG = false
-do
-    local f = io.open(DC.DEBUG_FILE, "r")
-    if f then
-        DC.DEBUG = (f:read("*a") or ""):find("1", 1, true) ~= nil
-        f:close()
-    end
-end
+DC.DEBUG = CFG.get("debug", false) == true
 function DC.debug_save()
-    local f = io.open(DC.DEBUG_FILE, "w")
-    if f then f:write(DC.DEBUG and "1" or "0") f:close() end
+    CFG.set("debug", DC.DEBUG and true or false)
 end
 
 DC.TRACE_KEEP = { "ERROR", "WARNING", "TERMINATE", "=== EventScan", "script version", "moonloader",
@@ -257,11 +473,13 @@ end
 function DC.clean_top3(list)
     local out = {}
     if type(list) ~= "table" then return out end
-    for _, e in ipairs(list) do
-        if type(e) == "table" and #out < 8 then
+    for _, e in pairs(list) do
+        if type(e) == "table" then
             out[#out + 1] = { author = DC.str(e.author) or "-", count = DC.num(e.count) }
         end
     end
+    table.sort(out, function(x, y) return x.count > y.count end)
+    while #out > 3 do table.remove(out) end
     return out
 end
 function DC.ftrace(msg)
@@ -802,7 +1020,12 @@ function DC.esp_wait_worker(channel, worker_url, hwid, date, version, log_path)
     end
     data = clean(data, 0) or { ok = false, err = "json_parse_fail" }
     wlog("json ok, pushing result")
-    channel:push(data)
+    local okE, raw = pcall(json.encode, data)
+    if not okE or type(raw) ~= "string" then
+        channel:push({ ok = false, err = "json_encode_fail" })
+        return
+    end
+    channel:push({ ok = true, raw = raw })
     wlog("pushed, thread ends")
 end
 
@@ -823,8 +1046,6 @@ function DC.dir_iter(path)
 end
 
 local LOCAL_DB_FILE  = DATA_DIR .. "event_scan_reports.json"
-local SCREENS_CACHE_FILE = DATA_DIR .. "screens_path_cache.txt"
-local HWID_CACHE_FILE = DATA_DIR .. "hwid_cache.txt"
 
 local function load_local_reports()
     local file = io.open(LOCAL_DB_FILE, "r")
@@ -974,19 +1195,13 @@ local function is_dir(path)
 end
 
 local function load_cached_hwid()
-    local file = io.open(HWID_CACHE_FILE, "r")
-    if not file then return nil end
-    local hwid = file:read("*l")
-    file:close()
-    if hwid and hwid ~= "" then return hwid end
+    local h = CFG.get("hwid")
+    if type(h) == "string" and h ~= "" then return h end
     return nil
 end
 
 local function save_cached_hwid(hwid)
-    local file = io.open(HWID_CACHE_FILE, "w")
-    if not file then return false end
-    file:write(hwid)
-    file:close()
+    CFG.set("hwid", hwid)
     return true
 end
 
@@ -1667,6 +1882,14 @@ local function browse_folder_worker(channel, title_utf8)
     end
 end
 
+function DC.plain(v)
+    if type(v) == "userdata" and effil.dump then
+        local ok, r = pcall(effil.dump, v)
+        if ok and type(r) == "table" then return r end
+    end
+    return v
+end
+
 function DC.wait_raw(channel, timeout_ms, thr, tag)
     tag = tag or "wait_for_channel"
     local meta = thr and DC.ethread_meta[thr]
@@ -1680,6 +1903,7 @@ function DC.wait_raw(channel, timeout_ms, thr, tag)
         polls = polls + 1
         local data = channel:pop(0)
         if data ~= nil then
+            data = DC.plain(data)
             DC.trace(string.format("%s WAIT ETHREAD#%s got result after %.0fms (polls=%d) %s",
                 tag, tostring(eid), (os.clock() - t0) * 1000, polls, DC.sumr(data)))
             return data
@@ -1695,6 +1919,7 @@ function DC.wait_raw(channel, timeout_ms, thr, tag)
             if ok and (status == "failed" or status == "completed" or status == "cancelled") then
                 local last = channel:pop(0)
                 if last ~= nil then
+                    last = DC.plain(last)
                     DC.trace(tag .. " WAIT thread finished, late result: " .. DC.sumr(last))
                     return last
                 end
@@ -1976,21 +2201,16 @@ local function resolve_hwid(callback)
 end
 
 local function load_cached_screens_root()
-    local file = io.open(SCREENS_CACHE_FILE, "r")
-    if not file then return nil end
-    local path = file:read("*l")
-    file:close()
-    if path and path ~= "" and is_dir(path) then
-        return path
+    local p = CFG.get("paths.screens")
+    if type(p) == "string" and p ~= "" then
+        p = CFG.s_dec(p)
+        if is_dir(p) then return p end
     end
     return nil
 end
 
 local function save_cached_screens_root(path)
-    local file = io.open(SCREENS_CACHE_FILE, "w")
-    if not file then return false end
-    file:write(path)
-    file:close()
+    CFG.set("paths.screens", CFG.s_enc(path))
     return true
 end
 
@@ -2357,7 +2577,6 @@ local TAG_GRADIENT = {
     { "a", "01cf0a" }, { "n", "01c909" }, { "]", "00a609" }
 }
 
-DC.THEME_FILE    = DATA_DIR .. "theme_color.txt"
 DC.THEME_DEFAULT = { 0x05 / 255, 1.0, 0x12 / 255 }
 DC.theme         = { DC.THEME_DEFAULT[1], DC.THEME_DEFAULT[2], DC.THEME_DEFAULT[3] }
 DC.theme_dirty   = false
@@ -2391,21 +2610,16 @@ function DC.theme_apply(r, g, b)
     end
     DC.tag = table.concat(parts)
     DC.tag_color = tonumber(GREEN_BRIGHT, 16)
+    DC.style_dirty = true
 end
 
 function DC.theme_save()
-    local f = io.open(DC.THEME_FILE, "w")
-    if not f then return false end
-    f:write(DC.theme_hex(DC.theme[1], DC.theme[2], DC.theme[3], 1.0))
-    f:close()
+    CFG.set("appearance.theme", DC.theme_hex(DC.theme[1], DC.theme[2], DC.theme[3], 1.0))
     return true
 end
 
 function DC.theme_load()
-    local f = io.open(DC.THEME_FILE, "r")
-    if not f then return end
-    local hex = tostring(f:read("*a") or ""):match("%x%x%x%x%x%x")
-    f:close()
+    local hex = tostring(CFG.get("appearance.theme", "")):match("%x%x%x%x%x%x")
     if not hex then return end
     DC.theme_apply(
         tonumber(hex:sub(1, 2), 16) / 255,
@@ -2493,11 +2707,7 @@ function DC.tex_release()
     end
 end
 
-function DC.image_size(path)
-    local f = io.open(path, "rb")
-    if not f then return nil end
-    local d = f:read("*a")
-    f:close()
+function DC.image_size_raw(d)
     if not d or #d < 24 then return nil end
 
     if d:sub(1, 4) == "\137PNG" then
@@ -2528,8 +2738,16 @@ function DC.image_size(path)
     return nil
 end
 
-function DC.cover_uv(path)
-    local w, h = DC.image_size(path)
+function DC.image_size(path)
+    local f = io.open(path, "rb")
+    if not f then return nil end
+    local d = f:read("*a")
+    f:close()
+    return DC.image_size_raw(d)
+end
+
+function DC.cover_uv_raw(d)
+    local w, h = DC.image_size_raw(d)
     if not w or not h or w <= 0 or h <= 0 or w == h then
         return DC.UV0, DC.UV1
     end
@@ -2558,31 +2776,46 @@ end
 
 function DC.avatar_fetch_inner(hwid)
     DC.trace("avatar_fetch: start")
-    local final = DATA_DIR .. "espl_avatar.png"
-    os.remove(final)
+    local tmpf = DATA_DIR .. "espl_avatar.png"
+    os.remove(tmpf)
 
     local url = active_worker_url:gsub("/+$", "") .. "/avatar-proxy?hwid=" .. DC.url_encode(hwid)
     local ch = effil.channel()
-    local ok_s, thr = pcall(DC.effil_start, DC.avatar_worker, ch, url, final)
+    local ok_s, thr = pcall(DC.effil_start, DC.avatar_worker, ch, url, tmpf)
     if not ok_s then return false, "thread_start_fail: " .. tostring(thr) end
 
     local r = wait_for_channel(ch, 25000, thr)
     if r == nil then pcall(function() thr:cancel(0) end) end
     DC.trace("avatar_fetch: worker done ok=" .. tostring(r and r.ok) .. " err=" .. tostring(r and r.err))
-    if not (r and r.ok and DC.is_image_file(final)) then
-        os.remove(final)
+    if not (r and r.ok and DC.is_image_file(tmpf)) then
+        os.remove(tmpf)
         return false, tostring(r and r.err or "timeout")
     end
 
-    local iw, ih = DC.image_size(final)
+    local iw, ih = DC.image_size(tmpf)
     DC.trace("avatar_fetch: image size " .. tostring(iw) .. "x" .. tostring(ih))
     if not iw or not ih or iw < 1 or ih < 1 or iw > 4096 or ih > 4096 then
-        os.remove(final)
+        os.remove(tmpf)
         return false, "bad_image_size"
     end
 
-    espl_panel.avatar_file  = final
-    espl_panel.avatar_ready = true
+    local fh = io.open(tmpf, "rb")
+    local raw = fh and fh:read("*a") or nil
+    if fh then fh:close() end
+    os.remove(tmpf)
+    if not raw or #raw < 100 then return false, "read_fail" end
+
+    local b64 = CFG.b64enc(raw)
+    if b64 then
+        CFG.set("avatar.png_b64", b64)
+    else
+        DC.trace("avatar_fetch: base64 encoder unavailable, avatar not persisted")
+    end
+
+    DC.tex_discard()
+    espl_panel.avatar_raw    = raw
+    espl_panel.avatar_ready  = true
+    espl_panel.avatar_synced = true
     DC.tex_dirty = true
     return true
 end
@@ -2599,7 +2832,7 @@ local function espl_format_balance(val)
         end
     end
     if val < 0 then result = "-" .. result end
-    return "$" .. result
+    return result
 end
 
 local function resolve_espl_author(callback)
@@ -2633,8 +2866,7 @@ local function resolve_espl_author(callback)
         end
 
         if result and result.ok and result.discord_linked then
-            if not espl_panel.avatar_ready and not espl_panel.avatar_tex
-                and (espl_panel.avatar_tries or 0) < 3 then
+            if not espl_panel.avatar_synced and (espl_panel.avatar_tries or 0) < 3 then
                 espl_panel.avatar_tries = (espl_panel.avatar_tries or 0) + 1
 
                 local ok_a, err_a = DC.avatar_fetch(hwid)
@@ -2644,7 +2876,7 @@ local function resolve_espl_author(callback)
             end
         end
 
-        if result and result.ok then
+        if result and result.ok and espl_local_author and espl_local_author ~= "" then
             espl_author_resolved = true
         end
         espl_author_resolving = false
@@ -2667,8 +2899,6 @@ local function espl_refresh_avatar()
     DC.spawn(function()
         cleanup_old_avatar_files()
         espl_panel.avatar_url   = nil
-        DC.tex_discard()
-        espl_panel.avatar_ready = false
         espl_panel.avatar_tries = 0
         espl_panel.avatar_file  = DATA_DIR .. "espl_avatar.png"
 
@@ -2717,6 +2947,14 @@ function DC.esp_start_polling(date_str)
                         DC.esp_thread = thr
                     end
                     result = wait_for_channel(channel, 32000, thr)
+                    if result and result.ok and type(result.raw) == "string" then
+                        local okD, d = pcall(dkjson.decode, result.raw)
+                        if okD and type(d) == "table" then
+                            result = d
+                        else
+                            result = { ok = false, err = "json_parse_fail" }
+                        end
+                    end
                     DC.trace("esp poll: wait_for_channel returned " .. tostring(result and (result.ok and "ok" or result.err)))
                     if result == nil then pcall(function() thr:cancel(0) end) end
                     if DC.esp_thread == thr then
@@ -2742,7 +2980,7 @@ function DC.esp_start_polling(date_str)
 
                         local sched = {}
                         for _, s in ipairs(result.slots or {}) do
-                            sched[s.time] = { author = DC.str(s.author) or "", title = DC.str(s.title) or "" }
+                            sched[s.time] = { author = DC.str(s.author) or "", title = DC.str(s.title) or "", missed = s.missed == true }
                         end
                         espl_schedule = sched
 
@@ -2758,6 +2996,8 @@ function DC.esp_start_polling(date_str)
 
                         if result.top3 then
                             espl_top3 = DC.clean_top3(result.top3)
+                            DC.top3_err = DC.str(result.top3_error) or ""
+                            DC.trace("top3 received n=" .. #espl_top3 .. " err=" .. DC.top3_err)
                         end
                     end
                     local spent_ms = (os.clock() - t0) * 1000
@@ -2843,7 +3083,15 @@ local function espl_author_colors(author)
     return colors
 end
 
-DC.SLOT_FILE  = DATA_DIR .. "slot_color.txt"
+DC.MISSED = {
+    border     = imgui.ImVec4(0.90, 0.22, 0.22, 1.0),
+    border_dim = imgui.ImVec4(0.90, 0.22, 0.22, 0.6),
+    bg         = imgui.ImVec4(0.42, 0.08, 0.08, 1.0),
+    bg_hover   = imgui.ImVec4(0.55, 0.11, 0.11, 1.0),
+    bg_dim     = imgui.ImVec4(0.30, 0.06, 0.06, 0.8),
+    accent     = imgui.ImVec4(1.0, 0.45, 0.45, 1.0),
+}
+
 DC.slot_rgb   = nil
 DC.slot_cache = nil
 DC.slot_dirty = false
@@ -2878,22 +3126,16 @@ end
 function DC.slot_clear()
     DC.slot_rgb   = nil
     DC.slot_cache = nil
-    os.remove(DC.SLOT_FILE)
+    CFG.set("appearance.slot_color", nil)
 end
 
 function DC.slot_save()
     if not DC.slot_rgb then return end
-    local f = io.open(DC.SLOT_FILE, "w")
-    if not f then return end
-    f:write(DC.theme_hex(DC.slot_rgb[1], DC.slot_rgb[2], DC.slot_rgb[3], 1.0))
-    f:close()
+    CFG.set("appearance.slot_color", DC.theme_hex(DC.slot_rgb[1], DC.slot_rgb[2], DC.slot_rgb[3], 1.0))
 end
 
 function DC.slot_load()
-    local f = io.open(DC.SLOT_FILE, "r")
-    if not f then return end
-    local hex = tostring(f:read("*a") or ""):match("%x%x%x%x%x%x")
-    f:close()
+    local hex = tostring(CFG.get("appearance.slot_color", "")):match("%x%x%x%x%x%x")
     if not hex then return end
     DC.slot_set(tonumber(hex:sub(1, 2), 16) / 255,
                 tonumber(hex:sub(3, 4), 16) / 255,
@@ -3097,9 +3339,378 @@ pcall(function()
     DC.trace("imgui wrappers installed (Button, InputText, ColorPicker3, OnFrame)")
 end)
 
+DC.style_dirty = true
+
+function DC.style_apply()
+    local S = imgui.GetStyle()
+    S.WindowRounding    = 10
+    S.ChildRounding     = 8
+    S.FrameRounding     = 7
+    S.PopupRounding     = 8
+    S.GrabRounding      = 7
+    S.ScrollbarRounding = 9
+    S.ScrollbarSize     = 10
+    S.GrabMinSize       = 12
+    S.WindowTitleAlign  = imgui.ImVec2(0.5, 0.5)
+
+    local C, col = imgui.Col, S.Colors
+    local function set(name, v)
+        local i = C[name]
+        if i ~= nil then col[i] = v end
+    end
+    local function acc(a) return hexcol(GREEN_BRIGHT, a) end
+    local function mid(a) return hexcol(GREEN_MID, a) end
+    local function drk(a) return hexcol(GREEN_DARK, a) end
+
+    set("Text",                 imgui.ImVec4(0.96, 0.98, 0.96, 1))
+    set("TextDisabled",         imgui.ImVec4(1, 1, 1, 0.35))
+    set("PopupBg",              DC.tc(0.050, 0.075, 0.050, 0.98))
+    set("FrameBg",              DC.tc(0.085, 0.125, 0.085, 1))
+    set("FrameBgHovered",       DC.tc(0.115, 0.185, 0.115, 1))
+    set("FrameBgActive",        DC.tc(0.145, 0.235, 0.145, 1))
+    set("ScrollbarBg",          imgui.ImVec4(0, 0, 0, 0))
+    set("ScrollbarGrab",        drk(0.75))
+    set("ScrollbarGrabHovered", mid(0.90))
+    set("ScrollbarGrabActive",  acc(1.00))
+    set("CheckMark",            acc(1.00))
+    set("SliderGrab",           mid(1.00))
+    set("SliderGrabActive",     acc(1.00))
+    set("Header",               acc(0.18))
+    set("HeaderHovered",        acc(0.32))
+    set("HeaderActive",         acc(0.45))
+    set("Separator",            mid(0.30))
+    set("TextSelectedBg",       acc(0.35))
+end
+
+DC.style_frame = imgui.OnFrame(function() return DC.style_dirty end, function()
+    DC.style_dirty = false
+    local ok, err = pcall(DC.style_apply)
+    if not ok then DC.trace("style_apply ERROR: " .. tostring(err)) end
+end)
+DC.style_frame.HideCursor = true
+
+function DC.deco_draw(top, col)
+    local dl = imgui.GetWindowDrawList()
+    local S  = imgui.GetStyle()
+    local p, sz = imgui.GetWindowPos(), imgui.GetWindowSize()
+    local r  = math.max(S.WindowRounding, 0)
+    local bs = math.max(S.WindowBorderSize, 1)
+
+    local gh   = math.min(90, sz.y / 2)
+    local step = 2
+    for y = 0, gh - step, step do
+        local a = 0.10 * (1 - y / gh)
+        local yc = bs + y + step / 2
+        local inset = 0
+        if yc < r then
+            local dy = r - yc
+            inset = r - math.sqrt(math.max(r * r - dy * dy, 0))
+        end
+        local x0 = p.x + bs + inset
+        local x1 = p.x + sz.x - bs - inset
+        if x1 > x0 then
+            dl:AddRectFilled(imgui.ImVec2(x0, p.y + bs + y), imgui.ImVec2(x1, p.y + bs + y + step),
+                DC.u32(col and imgui.ImVec4(col.x, col.y, col.z, a) or hexcol(GREEN_BRIGHT, a)))
+        end
+    end
+
+end
+
+function DC.deco_impl(top, col)
+    local dl = imgui.GetWindowDrawList()
+    local p, sz = imgui.GetWindowPos(), imgui.GetWindowSize()
+    local bs = math.max(imgui.GetStyle().WindowBorderSize, 1)
+    dl:PushClipRect(imgui.ImVec2(p.x + bs, p.y + bs),
+                    imgui.ImVec2(p.x + sz.x - bs, p.y + sz.y - bs), false)
+    local ok, err = pcall(DC.deco_draw, top, col)
+    dl:PopClipRect()
+    if not ok then error(err, 0) end
+end
+
+function DC.deco(top, col)
+    local ok, err = pcall(DC.deco_impl, top, col)
+    if not ok and not DC.deco_err then
+        DC.deco_err = true
+        DC.trace("deco ERROR: " .. tostring(err))
+    end
+end
+
+function DC.progress_impl(frac, h, fixed_w)
+    h = h or 6
+    local w = fixed_w or imgui.GetContentRegionAvail().x
+    local pos = imgui.GetCursorScreenPos()
+    imgui.Dummy(imgui.ImVec2(w, h))
+    frac = math.max(0, math.min(1, frac or 0))
+    local dl = imgui.GetWindowDrawList()
+    dl:AddRectFilled(pos, imgui.ImVec2(pos.x + w, pos.y + h),
+        DC.u32(imgui.ImVec4(1, 1, 1, 0.08)), h / 2)
+    if frac > 0.002 then
+        local fw = math.max(w * frac, h)
+        local c = frac > 0.2 and hexcol(GREEN_BRIGHT, 0.95) or imgui.ImVec4(1, 0.35, 0.35, 0.95)
+        dl:AddRectFilled(pos, imgui.ImVec2(pos.x + fw, pos.y + h),
+            DC.u32(c), h / 2)
+    end
+end
+
+function DC.progress(frac, h, fixed_w)
+    local ok, err = pcall(DC.progress_impl, frac, h, fixed_w)
+    if not ok and not DC.prog_err then
+        DC.prog_err = true
+        DC.trace("progress ERROR: " .. tostring(err))
+    end
+end
+
+DC.fades     = {}
+DC.cur_alpha = 1
+
+function DC.u32(c, mul)
+    local a = (c.w or 1) * (mul or 1) * (DC.cur_alpha or 1)
+    return imgui.ColorConvertFloat4ToU32(imgui.ImVec4(c.x, c.y, c.z, a))
+end
+
+function DC.fade_get(key, dur)
+    local now = os.clock()
+    local f = DC.fades[key]
+    if not f or now - f.last > 0.25 then f = { t0 = now } end
+    f.last = now
+    DC.fades[key] = f
+    local t = math.min((now - f.t0) / (dur or 0.2), 1)
+    return 0.02 + 0.98 * (1 - (1 - t) ^ 3)
+end
+
+function DC.alpha_push(key, dur, mul)
+    local a
+    local ok = pcall(function()
+        a = math.max(DC.fade_get(key, dur) * (mul or 1), 0.01)
+        imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, a)
+    end)
+    if ok then DC.cur_alpha = a end
+    return ok
+end
+
+function DC.alpha_pop(pushed)
+    if pushed then imgui.PopStyleVar(1) end
+    DC.cur_alpha = 1
+end
+
+function DC.espl_header_impl()
+    local S    = imgui.GetStyle()
+    local W    = imgui.GetWindowWidth()
+    local pad  = S.WindowPadding.x
+    local y0   = imgui.GetCursorPosY() - 3
+    local r, g, b = DC.theme[1], DC.theme[2], DC.theme[3]
+    local muted = DC.tc(0.65, 0.75, 0.65, 1)
+    local word  = "EventScan"
+
+    imgui.SetCursorPosY(y0)
+    if toast_font then imgui.PushFont(toast_font) end
+    local hh = imgui.GetTextLineHeight()
+    for i = 1, #word do
+        local t = (i - 1) / (#word - 1)
+        imgui.TextColored(hexcol(DC.theme_hex(r, g, b, 1.0 - 0.35 * t)), word:sub(i, i))
+        if i < #word then imgui.SameLine(0, 0) end
+    end
+    if toast_font then imgui.PopFont() end
+
+    local lh = imgui.GetTextLineHeight()
+    local ty = y0 + (hh - lh) / 2 + 1
+    imgui.SameLine(0, 14)
+    imgui.SetCursorPosY(ty)
+    if espl_load_error ~= "" then
+        imgui.TextColored(imgui.ImVec4(1, 0.35, 0.35, 1), espl_truncate_to_width(espl_load_error, 330))
+    elseif espl_loading then
+        imgui.TextColored(hexcol(GREEN_BRIGHT, 0.85), u8("Загрузка расписания..."))
+    else
+        imgui.TextColored(muted, u8("Планировщик мероприятий"))
+    end
+
+    local sq = 34
+    local close_dy = -2
+    local cx = W - pad - sq
+    local clock = os.date("!%H:%M:%S", os.time() + MSK_OFFSET) .. u8(" МСК")
+    local tw = imgui.CalcTextSize(clock).x
+    imgui.SetCursorPos(imgui.ImVec2(cx - 14 - tw, ty))
+    imgui.TextColored(muted, clock)
+
+    imgui.SetCursorPos(imgui.ImVec2(cx, math.floor(ty + lh / 2 - sq / 2 + close_dy + 0.5)))
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 9)
+    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0, 0, 0, 0))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0, 0, 0, 0))
+    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0, 0, 0, 0))
+    local clicked = imgui.Button("##es_espl_close", imgui.ImVec2(sq, sq))
+    imgui.PopStyleColor(3)
+    imgui.PopStyleVar(1)
+    local hov = imgui.IsItemHovered()
+    local bmin, bmax = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+    local mx, my = (bmin.x + bmax.x) / 2, (bmin.y + bmax.y) / 2
+    local k = 6
+    local col = DC.u32(hov and imgui.ImVec4(1, 1, 1, 1) or muted)
+    local dl = imgui.GetWindowDrawList()
+    local pad_i = 3
+    if not DC.icon_put("close_square", bmin.x + pad_i, bmin.y + pad_i,
+            bmax.x - bmin.x - pad_i * 2, bmax.y - bmin.y - pad_i * 2, col) then
+        dl:AddLine(imgui.ImVec2(mx - k, my - k), imgui.ImVec2(mx + k, my + k), col, 2.2)
+        dl:AddLine(imgui.ImVec2(mx - k, my + k), imgui.ImVec2(mx + k, my - k), col, 2.2)
+    end
+    if clicked then
+        espl_open[0]    = false
+        espl_modal_open = false
+        DC.esp_stop_polling()
+    end
+
+    imgui.SetCursorPosY(y0 + hh + 9)
+    imgui.SetCursorPosX(pad)
+    imgui.PushStyleColor(imgui.Col.Separator, hexcol(GREEN_MID, 0.35))
+    imgui.Separator()
+    imgui.PopStyleColor(1)
+    imgui.Spacing()
+end
+
+function DC.espl_header()
+    local ok, err = pcall(DC.espl_header_impl)
+    if not ok and not DC.hdr_err then
+        DC.hdr_err = true
+        DC.trace("espl_header ERROR: " .. tostring(err))
+    end
+end
+
+function DC.espl_footer_impl()
+    local W   = imgui.GetWindowWidth()
+    local pad = imgui.GetStyle().WindowPadding.x
+    local muted = DC.tc(0.65, 0.75, 0.65, 1)
+
+    imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Separator, hexcol(GREEN_MID, 0.30))
+    imgui.Separator()
+    imgui.PopStyleColor(1)
+    imgui.Spacing()
+
+    local lh = imgui.GetTextLineHeight()
+    local dl = imgui.GetWindowDrawList()
+    local function dot_label(col, text)
+        local p = imgui.GetCursorScreenPos()
+        dl:AddCircleFilled(imgui.ImVec2(p.x + 5, p.y + lh / 2), 4, DC.u32(col), 12)
+        imgui.Dummy(imgui.ImVec2(14, lh))
+        imgui.SameLine(0, 0)
+        imgui.TextColored(muted, text)
+    end
+
+    dot_label(hexcol(GREEN_MID), u8("свободно"))
+    imgui.SameLine(0, 18)
+    dot_label(hexcol(ESPL_AMBER), u8("идёт сейчас"))
+    imgui.SameLine(0, 18)
+    dot_label(DC.MISSED.accent, u8("отчёт не отправлен"))
+
+    local primary = (active_worker_url == WORKER_URL_PRIMARY)
+    local srv = primary and u8("сервер: основной") or u8("сервер: резервный")
+    local ver = "v" .. tostring(SCRIPT_VERSION)
+    local tw  = 14 + imgui.CalcTextSize(srv).x + 16 + imgui.CalcTextSize(ver).x
+    imgui.SameLine(W - pad - tw)
+    dot_label(primary and hexcol(GREEN_BRIGHT) or hexcol(ESPL_AMBER), srv)
+    imgui.SameLine(0, 16)
+    imgui.TextColored(imgui.ImVec4(1, 1, 1, 0.30), ver)
+end
+
+function DC.espl_footer()
+    local ok, err = pcall(DC.espl_footer_impl)
+    if not ok and not DC.ftr_err then
+        DC.ftr_err = true
+        DC.trace("espl_footer ERROR: " .. tostring(err))
+    end
+end
+
+function DC.slot_decor_impl(pos, w, h, booked, booking, is_past, time)
+    local dl = imgui.GetWindowDrawList()
+    local ep  = espl_slot_epoch(espl_selected_date, time)
+    local now = os.time()
+    if booked and ep > 0 and now >= ep and now < ep + 1200 then
+        local a = 0.55 + 0.45 * math.sin(os.clock() * 3.2)
+        dl:AddRect(imgui.ImVec2(pos.x + 1, pos.y + 1), imgui.ImVec2(pos.x + w - 1, pos.y + h - 1),
+            DC.u32(hexcol(ESPL_AMBER, a)), 7, 15, 2)
+    end
+end
+
+function DC.slot_decor(...)
+    local ok, err = pcall(DC.slot_decor_impl, ...)
+    if not ok and not DC.sd_err then
+        DC.sd_err = true
+        DC.trace("slot_decor ERROR: " .. tostring(err))
+    end
+end
+
+DC.anim = {}
+function DC.tween(key, target, speed, eps)
+    local v  = DC.anim[key] or 0
+    local dt = math.min(imgui.GetIO().DeltaTime, 0.1)
+    v = v + (target - v) * math.min(dt * (speed or 8), 1)
+    if math.abs(target - v) < (eps or 0.5) then v = target end
+    DC.anim[key] = v
+    return v
+end
+
+function DC.tab_decor(pos, size, accent_hex)
+    pcall(function()
+        local rel = pos.x - imgui.GetWindowPos().x
+        if DC.anim.tab_rel ~= rel then
+            DC.anim.tab_rel = rel
+            DC.anim.tabw = 0.72
+        end
+        local f    = DC.tween("tabw", 1, 20, 0.004)
+        local full = size.x - 24
+        local w    = full * f
+        local x0   = pos.x + 12 + (full - w) / 2
+        imgui.GetWindowDrawList():AddRectFilled(
+            imgui.ImVec2(x0, pos.y + size.y - 5),
+            imgui.ImVec2(x0 + w, pos.y + size.y - 3),
+            DC.u32(hexcol(accent_hex, 0.55 + 0.45 * ((f - 0.72) / 0.28))), 1)
+    end)
+end
+
+function DC.card_bg(h, hex, a)
+    local pos = imgui.GetCursorScreenPos()
+    local w   = imgui.GetContentRegionAvail().x
+    local dl  = imgui.GetWindowDrawList()
+    local p1  = imgui.ImVec2(pos.x - 6, pos.y - 3)
+    local p2  = imgui.ImVec2(pos.x + w + 6, pos.y + h + 3)
+    dl:AddRectFilled(p1, p2, DC.u32(hexcol(hex, a)), 8)
+    dl:AddRect(p1, p2, DC.u32(hexcol(hex, math.min(a * 2.2, 1))), 8, 15, 1)
+end
+
+function DC.top3_empty()
+    local avail = imgui.GetContentRegionAvail()
+    local lh    = imgui.GetTextLineHeight()
+    local gh    = 34
+    local total = gh + 10 + lh
+    imgui.SetCursorPosY(imgui.GetCursorPosY() + math.max((avail.y - total) / 2 - 8, 0))
+    local pos = imgui.GetCursorScreenPos()
+    local dl  = imgui.GetWindowDrawList()
+    local cx  = pos.x + avail.x / 2
+    local bw, gap = 14, 5
+    local col = DC.u32(hexcol(GREEN_MID, 0.30))
+    local bars = { { -bw - gap, 20 }, { 0, 34 }, { bw + gap, 13 } }
+    for _, bar in ipairs(bars) do
+        local x = cx + bar[1] - bw / 2
+        dl:AddRectFilled(imgui.ImVec2(x, pos.y + gh - bar[2]), imgui.ImVec2(x + bw, pos.y + gh), col, 3)
+    end
+    imgui.Dummy(imgui.ImVec2(avail.x, gh))
+    imgui.Spacing()
+    center_text(u8("Пока нет отчётов"), imgui.ImVec4(1, 1, 1, 0.45))
+end
+
+function DC.contrast_text(hex)
+    local r = tonumber(hex:sub(1, 2), 16) / 255
+    local g = tonumber(hex:sub(3, 4), 16) / 255
+    local b = tonumber(hex:sub(5, 6), 16) / 255
+    if 0.299 * r + 0.587 * g + 0.114 * b > 0.45 then
+        return imgui.ImVec4(0.02, 0.08, 0.02, 1)
+    end
+    return imgui.ImVec4(1, 1, 1, 1)
+end
+
 imgui.OnFrame(function() return espl_open[0] end, function()
     DC.ftrace("begin")
     DC.espl_tick()
+    local es_fade = DC.alpha_push("espl", 0.20)
     imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
     imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 8))
@@ -3120,7 +3731,9 @@ imgui.OnFrame(function() return espl_open[0] end, function()
     )
 
     imgui.Begin('##espl_window', espl_open,
-        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.AlwaysAutoResize)
+        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.AlwaysAutoResize + imgui.WindowFlags.NoTitleBar)
+    DC.deco(0)
+    DC.espl_header()
 
     if espl_dates then
         local today_ds = format_date_ymd(os.time() + MSK_OFFSET)
@@ -3184,6 +3797,7 @@ imgui.OnFrame(function() return espl_open[0] end, function()
                 draw_list:AddText(imgui.ImVec2(btn_pos.x + (btn_size.x - w2) / 2, start_y + line_h), color_u32, line2)
             end
 
+            if is_active then DC.tab_decor(btn_pos, btn_size, tab_accent) end
             if clicked and not espl_loading then
                 espl_select_date(ds)
             end
@@ -3199,22 +3813,6 @@ imgui.OnFrame(function() return espl_open[0] end, function()
     imgui.Separator()
     imgui.Spacing()
 
-    do
-        local status_text  = ""
-        local status_color = hexcol(GREEN_BRIGHT)
-        if espl_load_error ~= "" then
-            status_text  = espl_load_error
-            status_color = imgui.ImVec4(1, 0.35, 0.35, 1)
-        elseif espl_loading then
-            status_text  = u8("Загрузка расписания...")
-        end
-
-        if status_text ~= "" then
-            center_text(status_text, status_color)
-        else
-            imgui.Dummy(imgui.ImVec2(0, imgui.GetTextLineHeight()))
-        end
-    end
 
     imgui.Spacing()
 
@@ -3245,7 +3843,14 @@ imgui.OnFrame(function() return espl_open[0] end, function()
 
         local btn_bg, btn_bg_hover, btn_border, btn_text, border_size
 
-        if is_booked then
+        if is_booked and booking.missed then
+            local c = DC.MISSED
+            btn_bg       = c.bg
+            btn_bg_hover = c.bg_hover
+            btn_border   = c.border
+            btn_text     = imgui.ImVec4(1, 1, 1, 0.95)
+            border_size  = 2.0
+        elseif is_booked then
             local c = espl_author_colors(booking.author)
             btn_bg       = is_past and c.bg_dim or c.bg
             btn_bg_hover = is_past and c.bg_dim or c.bg_hover
@@ -3266,6 +3871,14 @@ imgui.OnFrame(function() return espl_open[0] end, function()
             border_size  = 1.0
         end
 
+        if is_booked then
+            local ep, now_t = espl_slot_epoch(espl_selected_date, time), os.time()
+            if ep > 0 and now_t >= ep and now_t < ep + 1200 then
+                btn_border  = hexcol(ESPL_AMBER, 0.45 + 0.55 * (0.5 + 0.5 * math.sin(os.clock() * 3.2)))
+                border_size = 2.0
+            end
+        end
+
         imgui.PushStyleColor(imgui.Col.Button, btn_bg)
         imgui.PushStyleColor(imgui.Col.ButtonHovered, btn_bg_hover)
         imgui.PushStyleColor(imgui.Col.ButtonActive, btn_bg_hover)
@@ -3282,6 +3895,15 @@ imgui.OnFrame(function() return espl_open[0] end, function()
         end
 
         local clicked = imgui.Button(label .. "##espl_slot_" .. time, imgui.ImVec2(slot_w, slot_h))
+        do
+            local hv = (not disabled) and imgui.IsItemHovered()
+            local hh = DC.tween("hov" .. time, hv and 1 or 0, 14, 0.01)
+            if hh > 0 then
+                imgui.GetWindowDrawList():AddRectFilled(slot_pos,
+                    imgui.ImVec2(slot_pos.x + slot_w, slot_pos.y + slot_h),
+                    DC.u32(imgui.ImVec4(1, 1, 1, 0.10 * hh)), 6)
+            end
+        end
 
         do
             local key
@@ -3293,19 +3915,16 @@ imgui.OnFrame(function() return espl_open[0] end, function()
                 key = grid_locked and "slot_free_off" or "slot_free_on"
             end
 
-            local tex, uv0, uv1, _, col32 = DC.icon_params(key)
-            if i == 1 or i == #slots then DC.ftrace("slot " .. i .. " key=" .. tostring(key) .. " booked=" .. tostring(is_booked) .. " past=" .. tostring(is_past) .. " tex=" .. tostring(tex)) end
-            if tex then
-                local spec = DC.ICON_SPEC[key]
-                local bx1, by1 = slot_pos.x + slot_w, slot_pos.y + slot_h
-                local ix = math.floor(bx1 - spec.size + 8 + 0.5)
-                local iy = math.floor(by1 - spec.size + 6 + 0.5)
-
-                imgui.GetWindowDrawList():AddImage(
-                    tex,
-                    imgui.ImVec2(ix, iy), imgui.ImVec2(ix + spec.w, iy + spec.h),
-                    uv0, uv1, col32)
+            if i == 1 or i == #slots then DC.ftrace("slot " .. i .. " key=" .. tostring(key) .. " booked=" .. tostring(is_booked) .. " past=" .. tostring(is_past)) end
+            local icol
+            if is_booked then
+                local c = booking.missed and DC.MISSED or espl_author_colors(booking.author)
+                local k = 0.82 * ((is_past and not booking.missed) and 0.6 or 1)
+                icol = DC.u32(imgui.ImVec4(c.border.x * k, c.border.y * k, c.border.z * k, 1))
+            elseif key == "slot_free_on" or key == "slot_past" or key == "slot_free_off" then
+                icol = DC.u32(btn_border)
             end
+            DC.slot_icon(key, slot_pos, slot_w, slot_h, icol)
         end
 
         imgui.PopStyleVar(3)
@@ -3337,6 +3956,7 @@ imgui.OnFrame(function() return espl_open[0] end, function()
 
         if i % cols ~= 0 then imgui.SameLine() end
     end
+
 
     DC.ftrace("slots done")
     local main_win_pos  = imgui.GetWindowPos()
@@ -3426,11 +4046,12 @@ imgui.OnFrame(function() return espl_open[0] end, function()
         imgui.PopStyleColor(1)
         imgui.Spacing()
 
-        local bal_str = espl_format_balance(espl_panel.balance)
+        local bal_str = espl_format_balance(DC.tween("bal", espl_panel.balance, 6, 0.5))
         DC.ftrace("stats balance=" .. tostring(espl_panel.balance) .. " today=" .. tostring(espl_panel.today) .. " author=" .. tostring(espl_panel.author))
         local bal_color = espl_panel.balance >= 0
             and hexcol(GREEN_BRIGHT)
             or imgui.ImVec4(1, 0.35, 0.35, 1)
+        pcall(DC.card_bg, imgui.GetTextLineHeight(), GREEN_BRIGHT, 0.10)
         do
             local isz  = imgui.GetTextLineHeight()
             local ig   = 2
@@ -3441,7 +4062,7 @@ imgui.OnFrame(function() return espl_open[0] end, function()
                 imgui.SetCursorPosX(math.floor(imgui.GetCursorPosX() + (avail - tw) / 2 + 0.5))
             end
             if has then
-                DC.icon_draw("coin", isz)
+                DC.icon_draw("coin", isz, imgui.ColorConvertFloat4ToU32(bal_color))
                 imgui.SameLine(0, ig)
             end
             imgui.TextColored(bal_color, bal_str)
@@ -3456,17 +4077,21 @@ imgui.OnFrame(function() return espl_open[0] end, function()
         local label_color = DC.tc(0.65, 0.75, 0.65, 1)
         local value_color = imgui.ImVec4(1, 1, 1, 1)
 
+        local v_today = tostring(math.floor(DC.tween("st_today", espl_panel.today, 8, 0.5) + 0.5))
+        local v_week = tostring(math.floor(DC.tween("st_week", espl_panel.week, 8, 0.5) + 0.5))
+        local v_all = tostring(math.floor(DC.tween("st_all", espl_panel.all, 8, 0.5) + 0.5))
+        pcall(DC.card_bg, imgui.GetTextLineHeight() * 3 + imgui.GetStyle().ItemSpacing.y * 2, GREEN_MID, 0.07)
         imgui.TextColored(label_color, u8("Сегодня:"))
-        imgui.SameLine(SIDE_W - imgui.CalcTextSize(tostring(espl_panel.today)).x)
-        imgui.TextColored(value_color, tostring(espl_panel.today))
+        imgui.SameLine(SIDE_W - imgui.CalcTextSize(v_today).x)
+        imgui.TextColored(value_color, v_today)
 
         imgui.TextColored(label_color, u8("За неделю:"))
-        imgui.SameLine(SIDE_W - imgui.CalcTextSize(tostring(espl_panel.week)).x)
-        imgui.TextColored(value_color, tostring(espl_panel.week))
+        imgui.SameLine(SIDE_W - imgui.CalcTextSize(v_week).x)
+        imgui.TextColored(value_color, v_week)
 
         imgui.TextColored(label_color, u8("Всего:"))
-        imgui.SameLine(SIDE_W - imgui.CalcTextSize(tostring(espl_panel.all)).x)
-        imgui.TextColored(value_color, tostring(espl_panel.all))
+        imgui.SameLine(SIDE_W - imgui.CalcTextSize(v_all).x)
+        imgui.TextColored(value_color, v_all)
 
         imgui.Spacing()
         imgui.PushStyleColor(imgui.Col.Separator, hexcol(GREEN_MID, 0.3))
@@ -3477,13 +4102,16 @@ imgui.OnFrame(function() return espl_open[0] end, function()
         if espl_panel.refreshing then
             center_text(u8("Обновление..."), hexcol(GREEN_BRIGHT, 0.7))
         else
-            local sq  = 26
+            local sq  = 28
             local gap = imgui.GetStyle().ItemSpacing.x
-            if imgui.Button(u8("Обновить аватарку"), imgui.ImVec2(SIDE_W - sq - gap, sq)) then
+            if DC.cbtn("es_avatar_btn", u8("Обновить аватарку"), imgui.ImVec2(SIDE_W - sq - gap, sq),
+                    nil, hexcol(GREEN_BRIGHT), true) then
                 espl_refresh_avatar()
             end
             imgui.SameLine(0, gap)
-            if imgui.Button("##es_color_btn", imgui.ImVec2(sq, sq)) then
+            local has_c = DC.icon_get("color") ~= nil
+            if DC.cbtn("es_color_btn", has_c and "" or "#", imgui.ImVec2(sq, sq),
+                    "color", imgui.ImVec4(1, 1, 1, 1), false) then
                 DC.color_open = not DC.color_open
                 if DC.color_open then
                     DC.color_mode = 1
@@ -3491,18 +4119,37 @@ imgui.OnFrame(function() return espl_open[0] end, function()
                     DC.color_focus = true
                 end
             end
+        end
+        if (DC.offline_count or 0) > 0 and not DC.offline_busy then
+            imgui.Spacing()
             do
-                local bmin, bmax = imgui.GetItemRectMin(), imgui.GetItemRectMax()
-                local cx, cy = (bmin.x + bmax.x) / 2, (bmin.y + bmax.y) / 2
-                local dl  = imgui.GetWindowDrawList()
-                local tex = DC.icon_get("color")
-                if tex then
-                    local half = DC.ICON_SPEC.color.w / 2
-                    dl:AddImage(tex, imgui.ImVec2(cx - half, cy - half), imgui.ImVec2(cx + half, cy + half))
-                else
-                    dl:AddRectFilled(imgui.ImVec2(cx - 6, cy - 6), imgui.ImVec2(cx + 6, cy + 6),
-                        imgui.ColorConvertFloat4ToU32(hexcol(GREEN_BRIGHT)), 3)
+                local amber = hexcol(ESPL_AMBER)
+                imgui.PushStyleColor(imgui.Col.Button, hexcol(ESPL_AMBER, 0.22))
+                imgui.PushStyleColor(imgui.Col.ButtonHovered, hexcol(ESPL_AMBER, 0.42))
+                imgui.PushStyleColor(imgui.Col.ButtonActive, hexcol(ESPL_AMBER, 0.60))
+                imgui.PushStyleColor(imgui.Col.Border, amber)
+                imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 1.5)
+                local bw = imgui.GetContentRegionAvail().x
+                if imgui.Button("##es_retry_btn", imgui.ImVec2(bw, 28)) then
+                    DC.offline_flush(true)
                 end
+                local bmin, bmax = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+                local dl   = imgui.GetWindowDrawList()
+                local text = u8("Не отправлено: ") .. tostring(DC.offline_count or 0)
+                local tex  = DC.icon_get("reload")
+                local isz  = 18
+                local tw   = imgui.CalcTextSize(text).x
+                local total = tw + (tex and (isz + 6) or 0)
+                local x = (bmin.x + bmax.x - total) / 2
+                local cy = (bmin.y + bmax.y) / 2
+                if tex then
+                    DC.icon_put("reload", x, cy - isz / 2, isz, isz, imgui.ColorConvertFloat4ToU32(amber))
+                    x = x + isz + 6
+                end
+                dl:AddText(imgui.ImVec2(x, cy - imgui.GetTextLineHeight() / 2),
+                    imgui.ColorConvertFloat4ToU32(amber), text)
+                imgui.PopStyleVar(1)
+                imgui.PopStyleColor(4)
             end
         end
     end
@@ -3512,25 +4159,18 @@ imgui.OnFrame(function() return espl_open[0] end, function()
 
     imgui.End()
 
-    local top3_win_x      = side_win_pos.x
-    local top3_win_y      = side_win_pos.y + side_win_size.y + SIDE_GAP
-    local top3_win_w      = side_win_size.x
-    local top3_win_h      = math.max(
-        (main_win_pos.y + main_win_size.y) - top3_win_y,
-        60
-    )
-
-    imgui.SetNextWindowPos(imgui.ImVec2(top3_win_x, top3_win_y), imgui.Cond.Always)
-    imgui.SetNextWindowSize(imgui.ImVec2(top3_win_w, top3_win_h), imgui.Cond.Always)
+    local top3_w = side_win_size.x
+    imgui.SetNextWindowPos(imgui.ImVec2(side_win_pos.x, side_win_pos.y + side_win_size.y + SIDE_GAP), imgui.Cond.Always)
+    imgui.SetNextWindowSize(imgui.ImVec2(top3_w, 0), imgui.Cond.Always)
 
     imgui.Begin('##espl_top3_panel', nil,
         imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize +
         imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoTitleBar +
         imgui.WindowFlags.NoMove + imgui.WindowFlags.NoScrollbar +
-        imgui.WindowFlags.NoScrollWithMouse)
+        imgui.WindowFlags.NoScrollWithMouse + imgui.WindowFlags.AlwaysAutoResize)
 
     DC.ftrace("top3")
-    local top3_content_w = imgui.GetContentRegionAvail().x
+    local cw = top3_w - 28
 
     center_text(u8("Топ за неделю"), hexcol(GREEN_BRIGHT))
     imgui.Spacing()
@@ -3540,56 +4180,58 @@ imgui.OnFrame(function() return espl_open[0] end, function()
     imgui.Spacing()
 
     if #espl_top3 == 0 then
-        center_text(u8("Пока нет отчётов"), imgui.ImVec4(0.6, 0.6, 0.6, 1))
-        imgui.Dummy(imgui.ImVec2(top3_content_w, 4))
-    else
-        local n           = #espl_top3
-        local BAR_MAX_W   = top3_content_w
-        local avail_h     = imgui.GetContentRegionAvail().y
-        local row_h       = avail_h / n
-        local text_h      = imgui.GetTextLineHeight()
-        local row_start_y = imgui.GetCursorPosY()
-
-        local max_count = (espl_top3[1] and espl_top3[1].count) or 1
-        if not max_count or max_count <= 0 then max_count = 1 end
-
-        for i, entry in ipairs(espl_top3) do
-            local row_top = row_start_y + (i - 1) * row_h
-            local gap     = math.min(4, row_h * 0.12)
-            local bar_h   = math.max(row_h - text_h - gap, 4)
-
-            local medal_hex = ESPL_MEDAL_COLORS[i] or GREEN_MID
-            local count_val = entry.count or 0
-            local frac      = math.max(count_val / max_count, 0.04)
-            local bar_w     = math.max(BAR_MAX_W * frac, 4)
-
-            local nick       = espl_short_nick(entry.author) or entry.author or "—"
-            local count_str  = tostring(count_val)
-            local label      = i .. ". " .. nick
-            local label_max_w = BAR_MAX_W - imgui.CalcTextSize(count_str).x - 8
-
-            imgui.SetCursorPosY(row_top)
-            imgui.TextColored(hexcol(medal_hex), espl_truncate_to_width(label, label_max_w))
-            imgui.SameLine(BAR_MAX_W - imgui.CalcTextSize(count_str).x)
-            imgui.TextColored(imgui.ImVec4(1, 1, 1, 1), count_str)
-
-            imgui.SetCursorPosY(row_top + text_h + gap)
-            local bar_pos   = imgui.GetCursorScreenPos()
-            local draw_list = imgui.GetWindowDrawList()
-            draw_list:AddRectFilled(
-                bar_pos,
-                imgui.ImVec2(bar_pos.x + BAR_MAX_W, bar_pos.y + bar_h),
-                imgui.ColorConvertFloat4ToU32(imgui.ImVec4(1, 1, 1, 0.08)), 4
-            )
-            draw_list:AddRectFilled(
-                bar_pos,
-                imgui.ImVec2(bar_pos.x + bar_w, bar_pos.y + bar_h),
-                imgui.ColorConvertFloat4ToU32(hexcol(medal_hex, 0.85)), 4
-            )
+        if not pcall(DC.top3_empty) then
+            center_text(u8("Пока нет отчётов"), imgui.ImVec4(0.6, 0.6, 0.6, 1))
         end
-        imgui.SetCursorPosY(row_start_y + avail_h)
+        if (DC.top3_err or "") ~= "" then
+            imgui.TextColored(imgui.ImVec4(1, 0.35, 0.35, 1), espl_truncate_to_width(DC.top3_err, cw))
+        end
+    else
+        local max_count = tonumber(espl_top3[1].count) or 1
+        if max_count <= 0 then max_count = 1 end
+        local ROW_H = 40
+        local PADX  = 10
+        local lh    = imgui.GetTextLineHeight()
+        for i, entry in ipairs(espl_top3) do
+            local medal_hex = ESPL_MEDAL_COLORS[i] or GREEN_MID
+            local count_val = tonumber(entry.count) or 0
+            local count_str = tostring(math.floor(DC.tween("topc" .. i, count_val, 8, 0.5) + 0.5))
+            local cwid      = imgui.CalcTextSize(count_str).x
+            local nick      = espl_short_nick(entry.author) or entry.author or "-"
+            local medal     = hexcol(medal_hex, 1)
+
+            local p  = imgui.GetCursorScreenPos()
+            local p2 = imgui.ImVec2(p.x + cw, p.y + ROW_H)
+            local dl = imgui.GetWindowDrawList()
+
+            dl:AddRectFilled(p, p2, DC.u32(imgui.ImVec4(1, 1, 1, 0.045)), 8)
+
+            local ty = p.y + 6
+            local nick_x = p.x + PADX
+            local nick_w = cw - PADX * 2 - cwid - 8
+            if i == 1 and DC.icon_get("crown") then
+                local isz = math.floor(imgui.GetFontSize())
+                DC.icon_put("crown", nick_x, ty, isz, isz, DC.u32(medal))
+                nick_x = nick_x + isz + 5
+                nick_w = nick_w - isz - 5
+            end
+            dl:AddText(imgui.ImVec2(nick_x, ty),
+                DC.u32(i == 1 and medal or imgui.ImVec4(1, 1, 1, 0.92)),
+                espl_truncate_to_width(nick, nick_w))
+            dl:AddText(imgui.ImVec2(p2.x - PADX - cwid, ty), DC.u32(medal), count_str)
+
+            local bx0, bx1, by = p.x + PADX, p2.x - PADX, p.y + ROW_H - 11
+            dl:AddRectFilled(imgui.ImVec2(bx0, by), imgui.ImVec2(bx1, by + 4),
+                DC.u32(imgui.ImVec4(1, 1, 1, 0.08)), 2)
+            local frac = math.max(DC.tween("topb" .. i, math.max(count_val / max_count, 0.05), 6, 0.003), 0)
+            dl:AddRectFilled(imgui.ImVec2(bx0, by), imgui.ImVec2(bx0 + (bx1 - bx0) * frac, by + 4),
+                DC.u32(medal), 2)
+
+            imgui.Dummy(imgui.ImVec2(cw, ROW_H))
+        end
     end
 
+    local t3_pos, t3_size = imgui.GetWindowPos(), imgui.GetWindowSize()
     imgui.End()
 
     imgui.PopStyleColor(3)
@@ -3597,97 +4239,176 @@ imgui.OnFrame(function() return espl_open[0] end, function()
 
     imgui.PopStyleColor(8)
     imgui.PopStyleVar(4)
+    DC.alpha_pop(es_fade)
     DC.ftrace("end")
     if (DC.espl_trace_left or 0) > 0 then DC.espl_trace_left = DC.espl_trace_left - 1 end
 end)
 
 imgui.OnFrame(function() return espl_modal_open end, function()
+    local es_fade = DC.alpha_push("modal", 0.15)
     local modal_booking = espl_schedule[espl_modal_time]
-    local modal_author_colors = nil
+    local mc = nil
     if espl_modal_mode == "foreign" then
-        modal_author_colors = espl_author_colors(espl_modal_view_author)
+        mc = espl_author_colors(espl_modal_view_author)
     elseif modal_booking then
-        modal_author_colors = espl_author_colors(modal_booking.author)
+        mc = espl_author_colors(modal_booking.author)
     end
-    local modal_border = modal_author_colors and modal_author_colors.border or hexcol(GREEN_MID)
+    if modal_booking and modal_booking.missed then mc = DC.MISSED end
 
-    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
+    local acc = mc and mc.border or hexcol(GREEN_BRIGHT)
+    local function A(a) return imgui.ImVec4(acc.x, acc.y, acc.z, a) end
+    local muted = DC.tc(0.65, 0.75, 0.65, 1)
+    local white = imgui.ImVec4(1, 1, 1, 1)
+    local W = 320
+
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 12)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 2.0)
     imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
-    imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 2.0)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(18, 16))
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 1.0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(20, 16))
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
     imgui.PushStyleColor(imgui.Col.WindowBg, DC.tc(0.05, 0.08, 0.05, 0.98))
-    imgui.PushStyleColor(imgui.Col.Border, modal_border)
-    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
-    imgui.PushStyleColor(imgui.Col.Button, hexcol(GREEN_DARK))
-    imgui.PushStyleColor(imgui.Col.ButtonHovered, hexcol(GREEN_MID))
+    imgui.PushStyleColor(imgui.Col.Border, A(1))
+    imgui.PushStyleColor(imgui.Col.Text, white)
+    imgui.PushStyleColor(imgui.Col.FrameBg, DC.tc(0.09, 0.13, 0.09, 1))
+    imgui.PushStyleColor(imgui.Col.FrameBgHovered, DC.tc(0.12, 0.18, 0.12, 1))
+    imgui.PushStyleColor(imgui.Col.FrameBgActive, DC.tc(0.14, 0.22, 0.14, 1))
 
     local imgui_io = imgui.GetIO()
     imgui.SetNextWindowPos(
         imgui.ImVec2(imgui_io.DisplaySize.x / 2, imgui_io.DisplaySize.y / 2),
         imgui.Cond.Always, imgui.ImVec2(0.5, 0.5)
     )
-
     imgui.SetNextWindowFocus()
 
     imgui.Begin('##espl_modal_window', nil,
         imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoSavedSettings +
         imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.AlwaysAutoResize)
+    DC.deco(0, acc)
 
-    local MODAL_CONTENT_W = 300
+    local x0  = imgui.GetCursorPosX()
+    local lh  = imgui.GetTextLineHeight()
+    local isz = math.floor(lh)
 
-    center_text(u8(tostring(espl_selected_date) .. " · " .. tostring(espl_modal_time)), hexcol(GREEN_BRIGHT))
-    imgui.Spacing()
+    local function chip_w(icon, text)
+        return 20 + imgui.CalcTextSize(text).x + (DC.icon_get(icon) and (isz + 6) or 0)
+    end
+    local function chip(icon, text)
+        local w, h = chip_w(icon, text), lh + 10
+        local p  = imgui.GetCursorScreenPos()
+        imgui.Dummy(imgui.ImVec2(w, h))
+        local dl = imgui.GetWindowDrawList()
+        local p2 = imgui.ImVec2(p.x + w, p.y + h)
+        dl:AddRectFilled(p, p2, DC.u32(A(0.16)), h / 2)
+        dl:AddRect(p, p2, DC.u32(A(0.55)), h / 2, 15, 1)
+        local x = p.x + 10
+        if DC.icon_get(icon) then
+            DC.icon_put(icon, x, p.y + (h - isz) / 2, isz, isz, DC.u32(A(1)))
+            x = x + isz + 6
+        end
+        dl:AddText(imgui.ImVec2(x, p.y + 5), DC.u32(white), text)
+    end
+
+    local function notice(icon, text, col)
+        text = espl_truncate_to_width(text, W - isz - 8)
+        local has = DC.icon_get(icon) ~= nil
+        local total = imgui.CalcTextSize(text).x + (has and (isz + 5) or 0)
+        imgui.SetCursorPosX(x0 + math.max((W - total) / 2, 0))
+        if has then
+            DC.icon_draw(icon, isz, DC.u32(col))
+            imgui.SameLine(0, 5)
+        end
+        imgui.TextColored(col, text)
+    end
+
+    local function cbtn(id, label, w, icon, c, filled, tcol)
+        imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(c.x, c.y, c.z, filled and 0.30 or 0.08))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(c.x, c.y, c.z, filled and 0.50 or 0.16))
+        imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(c.x, c.y, c.z, filled and 0.70 or 0.26))
+        imgui.PushStyleColor(imgui.Col.Border,        imgui.ImVec4(c.x, c.y, c.z, filled and 0.90 or 0.35))
+        imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 1.5)
+        local r = DC.btn_ic(id, label, imgui.ImVec2(w, 34), icon, tcol or white)
+        imgui.PopStyleVar(1)
+        imgui.PopStyleColor(4)
+        return r
+    end
+
+    local date_s, time_s = tostring(espl_selected_date), tostring(espl_modal_time)
+    local gap_c = 8
+    imgui.SetCursorPosX(x0 + math.max((W - (chip_w("modal_calendar", date_s) + gap_c + chip_w("modal_clock", time_s))) / 2, 0))
+    chip("modal_calendar", date_s)
+    imgui.SameLine(0, gap_c)
+    chip("modal_clock", time_s)
+
+    imgui.PushStyleColor(imgui.Col.Separator, A(0.35))
+    imgui.Separator()
+    imgui.PopStyleColor(1)
 
     if espl_modal_mode == "foreign" then
-        imgui.Text(u8("Автор:"))
-        imgui.SameLine()
-        do
-            local draw_list   = imgui.GetWindowDrawList()
-            local swatch_pos  = imgui.GetCursorScreenPos()
-            local swatch_size = 12
-            draw_list:AddRectFilled(
-                swatch_pos,
-                imgui.ImVec2(swatch_pos.x + swatch_size, swatch_pos.y + swatch_size),
-                imgui.ColorConvertFloat4ToU32(modal_author_colors.accent), 3
-            )
-            imgui.Dummy(imgui.ImVec2(swatch_size + 4, swatch_size))
+        if DC.icon_get("person") then
+            DC.icon_draw("person", isz, DC.u32(A(1)))
+            imgui.SameLine(0, 6)
         end
-        imgui.SameLine(0, 4)
-        imgui.TextColored(modal_author_colors.accent, espl_modal_view_author)
+        imgui.TextColored(muted, u8("Автор:"))
+        imgui.SameLine(0, 6)
+        imgui.TextColored(mc.accent, espl_truncate_to_width(espl_modal_view_author, W - 90))
 
-        imgui.Spacing()
-        imgui.Text(u8("Название:"))
-        imgui.PushTextWrapPos(imgui.GetCursorPosX() + MODAL_CONTENT_W)
-        imgui.TextWrapped(espl_modal_view_title)
+        if DC.icon_get("modal_title") then
+            DC.icon_draw("modal_title", isz, DC.u32(A(1)))
+            imgui.SameLine(0, 6)
+        end
+        imgui.TextColored(muted, u8("Название:"))
+
+        local txt = espl_modal_view_title
+        local okh, sz = pcall(imgui.CalcTextSize, txt, nil, false, W - 20)
+        local th = (okh and sz and sz.y) or lh
+        local p  = imgui.GetCursorScreenPos()
+        local dl = imgui.GetWindowDrawList()
+        local p2 = imgui.ImVec2(p.x + W, p.y + th + 16)
+        dl:AddRectFilled(p, p2, DC.u32(imgui.ImVec4(1, 1, 1, 0.05)), 8)
+        dl:AddRect(p, p2, DC.u32(A(0.35)), 8, 15, 1)
+        imgui.SetCursorScreenPos(imgui.ImVec2(p.x + 10, p.y + 8))
+        imgui.PushTextWrapPos(imgui.GetCursorPosX() + W - 20)
+        imgui.TextWrapped(txt)
         imgui.PopTextWrapPos()
+        imgui.SetCursorScreenPos(imgui.ImVec2(p.x, p.y + th + 16))
+        imgui.Dummy(imgui.ImVec2(W, 1))
     else
-        imgui.PushItemWidth(MODAL_CONTENT_W)
+        imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(34, 8))
+        imgui.PushStyleColor(imgui.Col.Border, A(0.55))
+        imgui.PushItemWidth(W)
         imgui.InputText('##espl_title_input', espl_modal_title_buf, ffi.sizeof(espl_modal_title_buf))
         imgui.PopItemWidth()
+        imgui.PopStyleColor(1)
+        imgui.PopStyleVar(1)
+        local smin, smax = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+        DC.icon_put("modal_title", smin.x + 11, smin.y + (smax.y - smin.y - isz) / 2, isz, isz, DC.u32(A(0.9)))
+        if ffi.string(espl_modal_title_buf) == "" then
+            imgui.GetWindowDrawList():AddText(imgui.ImVec2(smin.x + 34, smin.y + 8),
+                DC.u32(imgui.ImVec4(1, 1, 1, 0.35)), u8("Название мероприятия"))
+        end
     end
 
+    if modal_booking and modal_booking.missed then
+        notice("modal_alert", u8("Отчёт за этот слот не отправлен"), imgui.ImVec4(1, 0.45, 0.45, 1))
+    end
     if espl_modal_error ~= "" then
-        imgui.Spacing()
-        center_text(espl_modal_error, imgui.ImVec4(1, 0.35, 0.35, 1))
+        notice("modal_alert", espl_modal_error, imgui.ImVec4(1, 0.35, 0.35, 1))
     end
-
-    imgui.Spacing()
 
     if espl_modal_busy then
         center_text(u8("Отправка..."), hexcol(GREEN_BRIGHT))
     elseif espl_modal_mode == "foreign" then
-        if imgui.Button(u8("Закрыть"), imgui.ImVec2(MODAL_CONTENT_W, 32)) then
+        if cbtn("es_modal_close", u8("Закрыть"), W, "modal_cancel", acc, true) then
             espl_modal_open = false
         end
     else
-        local avail      = MODAL_CONTENT_W
         local gap        = 8
         local has_delete = espl_modal_mode == "own"
         local btn_count  = has_delete and 3 or 2
-        local btn_w      = (avail - gap * (btn_count - 1)) / btn_count
+        local btn_w      = (W - gap * (btn_count - 1)) / btn_count
 
-        if imgui.Button(u8("Сохранить"), imgui.ImVec2(btn_w, 32)) then
+        if cbtn("es_modal_save", u8("Сохранить"), btn_w, "modal_save", hexcol(GREEN_BRIGHT), true) then
             local title = ffi.string(espl_modal_title_buf)
             title = title:gsub('^%s+', ''):gsub('%s+$', '')
 
@@ -3710,6 +4431,7 @@ imgui.OnFrame(function() return espl_modal_open end, function()
 
                         if result and result.ok then
                             espl_schedule[time] = { author = result.author, title = result.title }
+                            pcall(DC.rem_add, date, time, DC.str(result.title) or title)
                             espl_modal_open = false
                         else
                             local err = result and result.err or "timeout"
@@ -3723,7 +4445,7 @@ imgui.OnFrame(function() return espl_modal_open end, function()
         imgui.SameLine(0, gap)
 
         if has_delete then
-            if imgui.Button(u8("Удалить"), imgui.ImVec2(btn_w, 32)) then
+            if cbtn("es_modal_delete", u8("Удалить"), btn_w, "modal_delete", imgui.ImVec4(0.92, 0.30, 0.30, 1), true) then
                 local hwid = get_hwid()
                 if not hwid then
                     espl_modal_error = u8("HWID ещё не определён")
@@ -3740,6 +4462,7 @@ imgui.OnFrame(function() return espl_modal_open end, function()
 
                         if result and result.ok then
                             espl_schedule[time] = nil
+                            pcall(DC.rem_del, date, time)
                             espl_modal_open = false
                         else
                             local err = result and result.err or "timeout"
@@ -3751,15 +4474,16 @@ imgui.OnFrame(function() return espl_modal_open end, function()
             imgui.SameLine(0, gap)
         end
 
-        if imgui.Button(u8("Отмена"), imgui.ImVec2(btn_w, 32)) then
+        if cbtn("es_modal_cancel", u8("Отмена"), btn_w, "modal_cancel", white, false, muted) then
             espl_modal_open = false
         end
     end
 
     imgui.End()
 
-    imgui.PopStyleColor(5)
-    imgui.PopStyleVar(5)
+    imgui.PopStyleColor(6)
+    imgui.PopStyleVar(6)
+    DC.alpha_pop(es_fade)
 end)
 
 DC.color_open  = false
@@ -3767,18 +4491,165 @@ DC.color_focus = false
 DC.color_mode  = 1
 DC.color_buf   = imgui.new.float[3](DC.theme[1], DC.theme[2], DC.theme[3])
 
+DC.cinp = {
+    hex = imgui_new.char[16](0),
+    rgb = imgui_new.char[32](0),
+    hsv = imgui_new.char[32](0),
+    lr  = nil,
+    bad = {},
+}
+
+function DC.rgb2hsv(r, g, b)
+    local mx, mn = math.max(r, g, b), math.min(r, g, b)
+    local d = mx - mn
+    local h = 0
+    if d > 0 then
+        if mx == r then h = ((g - b) / d) % 6
+        elseif mx == g then h = (b - r) / d + 2
+        else h = (r - g) / d + 4 end
+        h = h * 60
+    end
+    return h, (mx > 0) and (d / mx) or 0, mx
+end
+
+function DC.hsv2rgb(h, s, v)
+    h = (h % 360) / 60
+    local c = v * s
+    local x = c * (1 - math.abs(h % 2 - 1))
+    local m = v - c
+    local i = math.floor(h)
+    local r, g, b
+    if i == 0 then r, g, b = c, x, 0
+    elseif i == 1 then r, g, b = x, c, 0
+    elseif i == 2 then r, g, b = 0, c, x
+    elseif i == 3 then r, g, b = 0, x, c
+    elseif i == 4 then r, g, b = x, 0, c
+    else r, g, b = c, 0, x end
+    return r + m, g + m, b + m
+end
+
+function DC.parse_nums(str)
+    local t = {}
+    for n in tostring(str):gmatch("%d+%.?%d*") do t[#t + 1] = tonumber(n) end
+    return t
+end
+
+function DC.parse_hex(str)
+    str = tostring(str):gsub("%s", "")
+    local h = str:match("^#?(%x+)$") or str:match("^0[xX](%x+)$")
+    if not h then return nil end
+    if #h == 3 then h = h:gsub(".", "%0%0") end
+    if #h ~= 6 then return nil end
+    return tonumber(h:sub(1, 2), 16) / 255, tonumber(h:sub(3, 4), 16) / 255, tonumber(h:sub(5, 6), 16) / 255
+end
+
+function DC.parse_rgb(str)
+    local t = DC.parse_nums(str)
+    if #t ~= 3 then return nil end
+    for i = 1, 3 do if t[i] > 255 then return nil end end
+    return t[1] / 255, t[2] / 255, t[3] / 255
+end
+
+function DC.parse_hsv(str)
+    local t = DC.parse_nums(str)
+    if #t ~= 3 or t[1] > 360 or t[2] > 100 or t[3] > 100 then return nil end
+    return DC.hsv2rgb(t[1], t[2] / 100, t[3] / 100)
+end
+
+function DC.cinp_fill(except)
+    local I, B = DC.cinp, DC.color_buf
+    local r, g, b = B[0], B[1], B[2]
+    local function R(v) return math.max(0, math.min(255, math.floor(v * 255 + 0.5))) end
+    if except ~= "hex" then ffi.copy(I.hex, string.format("#%02X%02X%02X", R(r), R(g), R(b))) end
+    if except ~= "rgb" then ffi.copy(I.rgb, string.format("%d, %d, %d", R(r), R(g), R(b))) end
+    if except ~= "hsv" then
+        local h, sa, v = DC.rgb2hsv(r, g, b)
+        ffi.copy(I.hsv, string.format("%d, %d, %d", math.floor(h + 0.5) % 360,
+            math.floor(sa * 100 + 0.5), math.floor(v * 100 + 0.5)))
+    end
+end
+
+function DC.color_commit(r, g, b)
+    local B = DC.color_buf
+    B[0], B[1], B[2] = r, g, b
+    if DC.color_mode == 2 then
+        DC.slot_set(B[0], B[1], B[2])
+        DC.slot_dirty = true
+    else
+        DC.theme_apply(B[0], B[1], B[2])
+        DC.theme_dirty = true
+    end
+    DC.cinp.lr = { B[0], B[1], B[2] }
+end
+
+function DC.cinp_draw(W)
+    local I, B = DC.cinp, DC.color_buf
+    local muted = DC.tc(0.65, 0.75, 0.65, 1)
+
+    local lr = I.lr
+    if not lr or lr[1] ~= B[0] or lr[2] ~= B[1] or lr[3] ~= B[2] then
+        I.lr = { B[0], B[1], B[2] }
+        I.bad = {}
+        DC.cinp_fill(nil)
+    end
+
+    do
+        local pos = imgui.GetCursorScreenPos()
+        imgui.Dummy(imgui.ImVec2(W, 14))
+        imgui.GetWindowDrawList():AddRectFilled(pos, imgui.ImVec2(pos.x + W, pos.y + 14),
+            DC.u32(imgui.ImVec4(B[0], B[1], B[2], 1)), 6)
+    end
+
+    local LW = 38
+    local x0 = imgui.GetCursorPosX()
+    local function field(key, label, buf, parse)
+        imgui.AlignTextToFramePadding()
+        imgui.TextColored(muted, label)
+        imgui.SameLine(x0 + LW)
+        local bad = I.bad[key]
+        if bad then imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.38, 0.08, 0.08, 1)) end
+        imgui.PushItemWidth(W - LW)
+        imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 1.0) imgui.PushStyleColor(imgui.Col.Border, hexcol(GREEN_BRIGHT, 0.55)) local changed = imgui.InputText("##es_cin_" .. key, buf, ffi.sizeof(buf)) imgui.PopStyleColor(1) imgui.PopStyleVar(1)
+        imgui.PopItemWidth()
+        if bad then imgui.PopStyleColor(1) end
+        if changed then
+            local txt = ffi.string(buf)
+            local r, g, b = parse(txt)
+            if r then
+                I.bad[key] = false
+                DC.color_commit(r, g, b)
+                DC.cinp_fill(key)
+            else
+                I.bad[key] = (txt:gsub("%s", "") ~= "")
+            end
+        end
+    end
+    field("hex", "HEX", I.hex, DC.parse_hex)
+    field("rgb", "RGB", I.rgb, DC.parse_rgb)
+    field("hsv", "HSV", I.hsv, DC.parse_hsv)
+
+end
+
 DC.color_frame = imgui.OnFrame(function() return DC.color_open and espl_open[0] end, function()
-    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
-    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
+    local es_fade = DC.alpha_push("color_win", 0.15)
+    local acc   = hexcol(GREEN_BRIGHT)
+    local function A(a) return imgui.ImVec4(acc.x, acc.y, acc.z, a) end
+    local muted = DC.tc(0.65, 0.75, 0.65, 1)
+    local white = imgui.ImVec4(1, 1, 1, 1)
+    local W = 240
+
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 12)
     imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 2.0)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
-    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 8))
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 0.0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(18, 16))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
     imgui.PushStyleColor(imgui.Col.WindowBg, DC.tc(0.05, 0.08, 0.05, 0.98))
-    imgui.PushStyleColor(imgui.Col.Border, hexcol(GREEN_MID))
-    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
-    imgui.PushStyleColor(imgui.Col.Button, hexcol(GREEN_DARK))
-    imgui.PushStyleColor(imgui.Col.ButtonHovered, hexcol(GREEN_MID))
-    imgui.PushStyleColor(imgui.Col.ButtonActive, hexcol(GREEN_BRIGHT))
+    imgui.PushStyleColor(imgui.Col.Border, A(1))
+    imgui.PushStyleColor(imgui.Col.Text, white)
+    imgui.PushStyleColor(imgui.Col.FrameBg, DC.tc(0.09, 0.13, 0.09, 1))
+    imgui.PushStyleColor(imgui.Col.FrameBgHovered, DC.tc(0.12, 0.18, 0.12, 1))
+    imgui.PushStyleColor(imgui.Col.FrameBgActive, DC.tc(0.14, 0.22, 0.14, 1))
 
     local io = imgui.GetIO()
     imgui.SetNextWindowPos(
@@ -3793,28 +4664,58 @@ DC.color_frame = imgui.OnFrame(function() return DC.color_open and espl_open[0] 
         imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize +
         imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoTitleBar +
         imgui.WindowFlags.AlwaysAutoResize)
+    DC.deco(0, acc)
 
-    local W = 200
-    center_text(DC.color_mode == 2 and u8("Цвет моих полей") or u8("Основной цвет"), hexcol(GREEN_BRIGHT))
+    local x0  = imgui.GetCursorPosX()
+    local lh  = imgui.GetTextLineHeight()
+    local isz = math.floor(lh)
 
     do
-        local tab_gap = 6
+        local t  = DC.color_mode == 2 and u8("Цвет моих полей") or u8("Основной цвет")
+        local has = DC.icon_get("color") ~= nil
+        local cw = 20 + imgui.CalcTextSize(t).x + (has and (isz + 6) or 0)
+        local ch = lh + 10
+        imgui.SetCursorPosX(x0 + math.max((W - cw) / 2, 0))
+        local p  = imgui.GetCursorScreenPos()
+        imgui.Dummy(imgui.ImVec2(cw, ch))
+        local dl = imgui.GetWindowDrawList()
+        local p2 = imgui.ImVec2(p.x + cw, p.y + ch)
+        dl:AddRectFilled(p, p2, DC.u32(A(0.16)), ch / 2)
+        dl:AddRect(p, p2, DC.u32(A(0.55)), ch / 2, 15, 1)
+        local x = p.x + 10
+        if has then
+            DC.icon_put("color", x, p.y + (ch - isz) / 2, isz, isz, DC.u32(A(1)))
+            x = x + isz + 6
+        end
+        dl:AddText(imgui.ImVec2(x, p.y + 5), DC.u32(white), t)
+    end
+
+    imgui.PushStyleColor(imgui.Col.Separator, A(0.35))
+    imgui.Separator()
+    imgui.PopStyleColor(1)
+
+    do
+        local tab_gap = 8
         local tab_w   = (W - tab_gap) / 2
         local labels  = { u8("Основной"), u8("Мои поля") }
         for i = 1, 2 do
             local active = DC.color_mode == i
-            imgui.PushStyleColor(imgui.Col.Button, active and hexcol(GREEN_MID) or DC.tc(0.18, 0.22, 0.18, 1))
-            if imgui.Button(labels[i] .. "##es_cmode" .. i, imgui.ImVec2(tab_w, 26)) and not active then
+            local clicked
+            if active then
+                clicked = DC.cbtn("es_cmode" .. i, labels[i], imgui.ImVec2(tab_w, 30), nil, acc, true)
+            else
+                clicked = DC.cbtn("es_cmode" .. i, labels[i], imgui.ImVec2(tab_w, 30), nil, white, false, muted)
+            end
+            if clicked and not active then
                 if DC.slot_dirty then DC.slot_dirty = false DC.slot_save() end
                 DC.color_mode = i
                 DC.color_load_buf()
             end
-            imgui.PopStyleColor(1)
             if i == 1 then imgui.SameLine(0, tab_gap) end
         end
     end
 
-    local flags = (imgui.ColorEditFlags.PickerHueWheel or 0)
+    local flags = (imgui.ColorEditFlags.PickerHueBar or 0)
         + (imgui.ColorEditFlags.NoSidePreview or 0)
         + (imgui.ColorEditFlags.NoInputs or 0)
     imgui.PushItemWidth(W)
@@ -3838,12 +4739,15 @@ DC.color_frame = imgui.OnFrame(function() return DC.color_open and espl_open[0] 
         DC.slot_save()
     end
 
-    local gap = 8
-    local bw  = (W - gap) / 2
+    local okc, errc = pcall(DC.cinp_draw, W)
+    if not okc and not DC.cinp_err then
+        DC.cinp_err = true
+        DC.trace("cinp_draw ERROR: " .. tostring(errc))
+    end
 
-    local avail = imgui.GetContentRegionAvail().x
-    bw = (avail - gap) / 2
-    if imgui.Button(u8("Сбросить"), imgui.ImVec2(bw, 28)) then
+    local gap = 8
+    local bw  = (imgui.GetContentRegionAvail().x - gap) / 2
+    if DC.cbtn("es_color_reset", u8("Сбросить"), imgui.ImVec2(bw, 34), "reload", hexcol(ESPL_AMBER), false) then
         if DC.color_mode == 2 then
             DC.slot_clear()
             DC.slot_dirty = false
@@ -3856,7 +4760,7 @@ DC.color_frame = imgui.OnFrame(function() return DC.color_open and espl_open[0] 
         end
     end
     imgui.SameLine(0, gap)
-    if imgui.Button(u8("Готово"), imgui.ImVec2(bw, 28)) then
+    if DC.cbtn("es_color_done", u8("Готово"), imgui.ImVec2(bw, 34), "check", acc, true) then
         DC.theme_save()
         if DC.slot_dirty then DC.slot_dirty = false DC.slot_save() end
         DC.color_open = false
@@ -3865,7 +4769,8 @@ DC.color_frame = imgui.OnFrame(function() return DC.color_open and espl_open[0] 
     imgui.End()
 
     imgui.PopStyleColor(6)
-    imgui.PopStyleVar(5)
+    imgui.PopStyleVar(6)
+    DC.alpha_pop(es_fade)
 end)
 
 local toast_visible = imgui_new.bool(false)
@@ -4140,11 +5045,16 @@ imgui.OnFrame(function() return toast_visible[0] and not screens_path_open[0] en
     imgui.SetCursorPosY((win_size.y - line_h) / 2)
 
     local text_w = imgui.CalcTextSize(text).x
+    local ic_w = DC.toast_icon_w(text, line_h)
     local avail_w = win_size.x - (TOAST_PAD * 2)
-    if text_w < avail_w then
-        imgui.SetCursorPosX(TOAST_PAD + (avail_w - text_w) / 2)
-    else
-        imgui.SetCursorPosX(TOAST_PAD)
+    local start_x = TOAST_PAD
+    if text_w + ic_w < avail_w then
+        start_x = TOAST_PAD + (avail_w - text_w - ic_w) / 2
+    end
+    imgui.SetCursorPosX(start_x)
+    if ic_w > 0 then
+        DC.toast_icon_draw(line_h, text_color, eased_progress)
+        imgui.SetCursorPosX(start_x + ic_w)
     end
 
     imgui.PushTextWrapPos(win_size.x - TOAST_PAD)
@@ -4272,11 +5182,16 @@ imgui.OnFrame(function() return ess_toast_visible[0] and not screens_path_open[0
     imgui.SetCursorPosY((win_size.y - line_h) / 2)
 
     local text_w = imgui.CalcTextSize(text).x
+    local ic_w = DC.toast_icon_w(text, line_h)
     local avail_w = win_size.x - (TOAST_PAD * 2)
-    if text_w < avail_w then
-        imgui.SetCursorPosX(TOAST_PAD + (avail_w - text_w) / 2)
-    else
-        imgui.SetCursorPosX(TOAST_PAD)
+    local start_x = TOAST_PAD
+    if text_w + ic_w < avail_w then
+        start_x = TOAST_PAD + (avail_w - text_w - ic_w) / 2
+    end
+    imgui.SetCursorPosX(start_x)
+    if ic_w > 0 then
+        DC.toast_icon_draw(line_h, text_color, eased_progress)
+        imgui.SetCursorPosX(start_x + ic_w)
     end
 
     imgui.PushTextWrapPos(win_size.x - TOAST_PAD)
@@ -4341,87 +5256,168 @@ local function utf8_to_ansi(str)
 end
 
 imgui.OnFrame(function() return screens_path_open[0] end, function()
-    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 6)
-    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 4)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(16, 16))
-    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+    local acc   = hexcol(GREEN_BRIGHT)
+    local function A(a) return imgui.ImVec4(acc.x, acc.y, acc.z, a) end
+    local muted = DC.tc(0.65, 0.75, 0.65, 1)
+    local white = imgui.ImVec4(1, 1, 1, 1)
+    local W = 460
 
-    imgui.PushStyleColor(imgui.Col.WindowBg, DC.tc(0.06, 0.09, 0.06, 0.98))
-    imgui.PushStyleColor(imgui.Col.Border, hexcol(GREEN_MID))
-    imgui.PushStyleColor(imgui.Col.TitleBg, hexcol(GREEN_DARK))
-    imgui.PushStyleColor(imgui.Col.TitleBgActive, hexcol(GREEN_DARK))
-    imgui.PushStyleColor(imgui.Col.FrameBg, DC.tc(0.10, 0.14, 0.10, 1))
-    imgui.PushStyleColor(imgui.Col.FrameBgHovered, DC.tc(0.12, 0.20, 0.12, 1))
-    imgui.PushStyleColor(imgui.Col.FrameBgActive, DC.tc(0.14, 0.24, 0.14, 1))
-    imgui.PushStyleColor(imgui.Col.Button, hexcol(GREEN_DARK))
-    imgui.PushStyleColor(imgui.Col.ButtonHovered, hexcol(GREEN_MID))
-    imgui.PushStyleColor(imgui.Col.ButtonActive, hexcol(GREEN_BRIGHT))
-    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 12)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 2.0)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 1.0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(20, 16))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
+    imgui.PushStyleColor(imgui.Col.WindowBg, DC.tc(0.05, 0.08, 0.05, 0.98))
+    imgui.PushStyleColor(imgui.Col.Border, A(1))
+    imgui.PushStyleColor(imgui.Col.Text, white)
+    imgui.PushStyleColor(imgui.Col.FrameBg, DC.tc(0.09, 0.13, 0.09, 1))
+    imgui.PushStyleColor(imgui.Col.FrameBgHovered, DC.tc(0.12, 0.18, 0.12, 1))
+    imgui.PushStyleColor(imgui.Col.FrameBgActive, DC.tc(0.14, 0.22, 0.14, 1))
 
     local imgui_io = imgui.GetIO()
     imgui.SetNextWindowPos(
         imgui.ImVec2(imgui_io.DisplaySize.x / 2, imgui_io.DisplaySize.y / 2),
-        imgui.Cond.Always,
-        imgui.ImVec2(0.5, 0.5)
-    )
+        imgui.Cond.Always, imgui.ImVec2(0.5, 0.5))
 
-    local window_height = (screens_path_error ~= "") and 242 or 218
-    imgui.SetNextWindowSize(imgui.ImVec2(520, window_height), imgui.Cond.Always)
-    imgui.Begin(u8('Настройка EventScan'), nil,
-        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoSavedSettings)
-    center_text(u8('Не найдена папка со скриншотами (arizona\\screens).'))
-    center_text(u8('Вставьте путь, нажмите "Обзор..." или "Авто" для автопоиска.'))
-    center_text(u8('Путь к папке:'), hexcol(GREEN_BRIGHT))
-    imgui.PushItemWidth(-1)
-    imgui.InputText('##screens_path_input', screens_path_buf, ffi.sizeof(screens_path_buf))
-    imgui.PopItemWidth()
+    imgui.Begin('##es_screens_window', nil,
+        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoSavedSettings +
+        imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.AlwaysAutoResize)
+    DC.deco(0, acc)
 
-    if screens_path_error ~= "" then
-        center_text(u8(screens_path_error), imgui.ImVec4(1, 0.35, 0.35, 1))
+    local x0  = imgui.GetCursorPosX()
+    local lh  = imgui.GetTextLineHeight()
+    local isz = math.floor(lh)
+
+    local function chip_w(icon, text)
+        return 20 + imgui.CalcTextSize(text).x + (DC.icon_get(icon) and (isz + 6) or 0)
+    end
+    local function chip(icon, text)
+        local cw, ch = chip_w(icon, text), lh + 10
+        local p  = imgui.GetCursorScreenPos()
+        imgui.Dummy(imgui.ImVec2(cw, ch))
+        local dl = imgui.GetWindowDrawList()
+        local p2 = imgui.ImVec2(p.x + cw, p.y + ch)
+        dl:AddRectFilled(p, p2, DC.u32(A(0.16)), ch / 2)
+        dl:AddRect(p, p2, DC.u32(A(0.55)), ch / 2, 15, 1)
+        local x = p.x + 10
+        if DC.icon_get(icon) then
+            DC.icon_put(icon, x, p.y + (ch - isz) / 2, isz, isz, DC.u32(A(1)))
+            x = x + isz + 6
+        end
+        dl:AddText(imgui.ImVec2(x, p.y + 5), DC.u32(white), text)
     end
 
-    imgui.Spacing()
+    local function line(text, col)
+        if imgui.CalcTextSize(text).x <= W then
+            imgui.SetCursorPosX(x0 + (W - imgui.CalcTextSize(text).x) / 2)
+            imgui.TextColored(col, text)
+        else
+            imgui.PushTextWrapPos(x0 + W)
+            imgui.TextColored(col, text)
+            imgui.PopTextWrapPos()
+        end
+    end
+
+    local function notice(icon, text, col)
+        local has = DC.icon_get(icon) ~= nil
+        local iw  = has and (isz + 6) or 0
+        local tw  = imgui.CalcTextSize(text).x
+        if tw + iw <= W then
+            imgui.SetCursorPosX(x0 + (W - tw - iw) / 2)
+            if has then
+                DC.icon_draw(icon, isz, DC.u32(col))
+                imgui.SameLine(0, 6)
+            end
+            imgui.TextColored(col, text)
+        else
+            if has then
+                DC.icon_draw(icon, isz, DC.u32(col))
+                imgui.SameLine(0, 6)
+            end
+            imgui.PushTextWrapPos(x0 + W)
+            imgui.TextColored(col, text)
+            imgui.PopTextWrapPos()
+        end
+    end
+
+    do
+        local t = u8("Папка скриншотов")
+        imgui.SetCursorPosX(x0 + math.max((W - chip_w("folder", t)) / 2, 0))
+        chip("folder", t)
+    end
+
+    imgui.PushStyleColor(imgui.Col.Separator, A(0.35))
     imgui.Separator()
-    imgui.Spacing()
+    imgui.PopStyleColor(1)
+
+    line(u8('Не найдена папка со скриншотами (arizona\\screens).'), imgui.ImVec4(1, 1, 1, 0.92))
+    line(u8('Вставьте путь, нажмите "Обзор..." или "Авто" для автопоиска.'), muted)
+
+    local do_done = false
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(34, 8))
+    imgui.PushStyleColor(imgui.Col.Border, A(0.55))
+    imgui.PushItemWidth(W)
+    if imgui.InputText('##screens_path_input', screens_path_buf, ffi.sizeof(screens_path_buf),
+            imgui.InputTextFlags.EnterReturnsTrue) and not screens_path_busy then
+        do_done = true
+    end
+    imgui.PopItemWidth()
+    imgui.PopStyleColor(1)
+    imgui.PopStyleVar(1)
+    do
+        local smin, smax = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+        DC.icon_put("folder", smin.x + 11, smin.y + (smax.y - smin.y - isz) / 2, isz, isz, DC.u32(A(0.9)))
+        if ffi.string(screens_path_buf) == "" then
+            imgui.GetWindowDrawList():AddText(imgui.ImVec2(smin.x + 34, smin.y + 8),
+                DC.u32(imgui.ImVec4(1, 1, 1, 0.35)), u8("Путь к папке"))
+        end
+    end
+
+    if screens_path_error ~= "" then
+        notice("modal_alert", u8(screens_path_error), imgui.ImVec4(1, 0.35, 0.35, 1))
+    end
 
     if screens_path_busy then
-        center_text(u8(screens_path_status), hexcol(GREEN_BRIGHT))
+        notice("search", u8(screens_path_status), hexcol(GREEN_BRIGHT))
     else
+        local gap = 8
+        local btn_w = (W - gap * 2) / 3
 
-        local gap = 10
-        local avail_w = imgui.GetContentRegionAvail().x
-        local btn_w = (avail_w - gap * 2) / 3
-
-        if imgui.Button(u8('Готово'), imgui.ImVec2(btn_w, 34)) then
-            local path = ffi.string(screens_path_buf)
-            path = path:gsub('^%s+', ''):gsub('%s+$', ''):gsub('"', '')
-
-            path = utf8_to_ansi(path)
-            if path == "" then
-                screens_path_error = "Введите путь к папке"
-            elseif not is_dir(path) then
-                screens_path_error = "Такой папки не существует"
-            else
-                screens_path_error = ""
-                screens_path_result = { mode = "manual", path = path }
-            end
+        if DC.cbtn("es_scr_done", u8("Готово"), imgui.ImVec2(btn_w, 34), "check", hexcol(GREEN_BRIGHT), true) then
+            do_done = true
         end
         imgui.SameLine(0, gap)
-        if imgui.Button(u8('Обзор...'), imgui.ImVec2(btn_w, 34)) then
+        if DC.cbtn("es_scr_browse", u8("Обзор..."), imgui.ImVec2(btn_w, 34), "folder_open", white, false, muted) then
             screens_path_error = ""
             screens_path_result = { mode = "browse" }
         end
         imgui.SameLine(0, gap)
-        if imgui.Button(u8('Авто'), imgui.ImVec2(btn_w, 34)) then
+        if DC.cbtn("es_scr_auto", u8("Авто"), imgui.ImVec2(btn_w, 34), "wand", hexcol(ESPL_AMBER), false) then
             screens_path_error = ""
             screens_path_result = { mode = "auto" }
         end
     end
 
+    if do_done and not screens_path_busy then
+        local path = ffi.string(screens_path_buf)
+        path = path:gsub('^%s+', ''):gsub('%s+$', ''):gsub('"', '')
+
+        path = utf8_to_ansi(path)
+        if path == "" then
+            screens_path_error = "Введите путь к папке"
+        elseif not is_dir(path) then
+            screens_path_error = "Такой папки не существует"
+        else
+            screens_path_error = ""
+            screens_path_result = { mode = "manual", path = path }
+        end
+    end
+
     imgui.End()
 
-    imgui.PopStyleColor(11)
-    imgui.PopStyleVar(4)
+    imgui.PopStyleColor(6)
+    imgui.PopStyleVar(6)
 end)
 
 local function resolve_screens_root(callback)
@@ -5039,16 +6035,22 @@ sampRegisterChatCommand = function(name, handler)
 end
 
 imgui.OnFrame(function() return DC.win_open[0] end, function()
-    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
-    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(18, 16))
+    local es_fade = DC.alpha_push("discord_auth", 0.15)
+    local acc   = hexcol(GREEN_BRIGHT)
+    local function A(a) return imgui.ImVec4(acc.x, acc.y, acc.z, a) end
+    local muted = DC.tc(0.65, 0.75, 0.65, 1)
+    local white = imgui.ImVec4(1, 1, 1, 1)
+    local W = 380
+
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 12)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 2.0)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 1.0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(20, 16))
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
-    imgui.PushStyleColor(imgui.Col.WindowBg, DC.tc(0.055, 0.075, 0.055, 0.98))
-    imgui.PushStyleColor(imgui.Col.Border, hexcol(GREEN_MID))
-    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
-    imgui.PushStyleColor(imgui.Col.Button, hexcol(GREEN_DARK))
-    imgui.PushStyleColor(imgui.Col.ButtonHovered, hexcol(GREEN_MID))
-    imgui.PushStyleColor(imgui.Col.ButtonActive, hexcol(GREEN_BRIGHT))
+    imgui.PushStyleColor(imgui.Col.WindowBg, DC.tc(0.05, 0.08, 0.05, 0.98))
+    imgui.PushStyleColor(imgui.Col.Border, A(1))
+    imgui.PushStyleColor(imgui.Col.Text, white)
 
     local io = imgui.GetIO()
     imgui.SetNextWindowPos(
@@ -5061,32 +6063,93 @@ imgui.OnFrame(function() return DC.win_open[0] end, function()
         imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize +
         imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoTitleBar +
         imgui.WindowFlags.AlwaysAutoResize)
+    DC.deco(0, acc)
 
-    local W = 320
+    local x0  = imgui.GetCursorPosX()
+    local lh  = imgui.GetTextLineHeight()
+    local isz = math.floor(lh)
 
-    center_text(u8("Требуется авторизация"), hexcol(GREEN_BRIGHT))
-    imgui.Spacing()
-    imgui.PushTextWrapPos(imgui.GetCursorPosX() + W)
-    imgui.TextWrapped(u8("Чтобы пользоваться EventScan, привяжи свой Discord-аккаунт. Нажми кнопку ниже, авторизуйся в браузере и вернись в игру — окно закроется само."))
-    imgui.PopTextWrapPos()
-    imgui.Spacing()
+    do
+        local t  = u8("Требуется авторизация")
+        local cw = 20 + imgui.CalcTextSize(t).x + (DC.icon_get("lock") and (isz + 6) or 0)
+        local ch = lh + 10
+        imgui.SetCursorPosX(x0 + math.max((W - cw) / 2, 0))
+        local p  = imgui.GetCursorScreenPos()
+        imgui.Dummy(imgui.ImVec2(cw, ch))
+        local dl = imgui.GetWindowDrawList()
+        local p2 = imgui.ImVec2(p.x + cw, p.y + ch)
+        dl:AddRectFilled(p, p2, DC.u32(A(0.16)), ch / 2)
+        dl:AddRect(p, p2, DC.u32(A(0.55)), ch / 2, 15, 1)
+        local x = p.x + 10
+        if DC.icon_get("lock") then
+            DC.icon_put("lock", x, p.y + (ch - isz) / 2, isz, isz, DC.u32(A(1)))
+            x = x + isz + 6
+        end
+        dl:AddText(imgui.ImVec2(x, p.y + 5), DC.u32(white), t)
+    end
 
-    if imgui.Button(u8("Авторизоваться через Discord"), imgui.ImVec2(W, 34)) then
+    imgui.PushStyleColor(imgui.Col.Separator, A(0.35))
+    imgui.Separator()
+    imgui.PopStyleColor(1)
+
+    local function wrap_center(text, col)
+        local cur = ""
+        local function flush()
+            if cur == "" then return end
+            imgui.SetCursorPosX(x0 + math.max((W - imgui.CalcTextSize(cur).x) / 2, 0))
+            imgui.TextColored(col, cur)
+            cur = ""
+        end
+        for word in text:gmatch("%S+") do
+            local try = (cur == "") and word or (cur .. " " .. word)
+            if cur ~= "" and imgui.CalcTextSize(try).x > W then
+                flush()
+                cur = word
+            else
+                cur = try
+            end
+        end
+        flush()
+    end
+
+    wrap_center(u8("Для работы EventScan нужно привязать твой Discord-аккаунт."), imgui.ImVec4(1, 1, 1, 0.95))
+    wrap_center(u8("Нажми кнопку ниже, войди в браузере и возвращайся в игру. Окно закроется автоматически."), muted)
+
+    do
+        local p  = imgui.GetCursorScreenPos()
+        local dl = imgui.GetWindowDrawList()
+        if DC.polling then
+            local t   = u8("Жду подтверждения...")
+            local has = DC.icon_get("hourglass_green") ~= nil
+            local iw  = has and (isz + 6) or 0
+            local sx  = p.x + math.max((W - imgui.CalcTextSize(t).x - iw) / 2, 0)
+            if has then
+                local hsx, hsy, hang, hoy = DC.hg_state()
+                DC.icon_put("hourglass_green", sx, p.y, isz, isz, DC.u32(A(1)), hang, hsx, hsy, 0, hoy * isz)
+                sx = sx + iw
+            end
+            dl:AddText(imgui.ImVec2(sx, p.y), DC.u32(A(1)), t)
+        end
+        imgui.Dummy(imgui.ImVec2(W, lh))
+    end
+
+    local gap   = 8
+    local w_cl  = 120
+    local w_au  = W - gap - w_cl
+    if DC.cbtn("es_discord_auth", u8("Войти через Discord"), imgui.ImVec2(w_au, 36),
+            DC.icon_get("discord") and "discord" or "check", hexcol(GREEN_BRIGHT), true) then
         DC.open_browser()
     end
-
-    if DC.polling then
-        center_text(u8("Жду подтверждения..."), DC.tc(0.65, 0.75, 0.65, 1))
-    end
-
-    if imgui.Button(u8("Закрыть"), imgui.ImVec2(W, 28)) then
+    imgui.SameLine(0, gap)
+    if DC.cbtn("es_discord_close", u8("Закрыть"), imgui.ImVec2(w_cl, 36), "modal_cancel", white, false, muted) then
         DC.win_open[0] = false
     end
 
     imgui.End()
 
-    imgui.PopStyleColor(6)
-    imgui.PopStyleVar(4)
+    imgui.PopStyleColor(3)
+    imgui.PopStyleVar(6)
+    DC.alpha_pop(es_fade)
 end)
 
 function parse_iso8601_utc(str)
@@ -5119,49 +6182,36 @@ DC.tp_frame        = nil
 
 DC.cursor_key = vkeys.VK_X
 DC.rebinding  = false
-DC.KEY_FILE   = DATA_DIR .. "tp_key.txt"
 
 function DC.key_save()
-    local f = io.open(DC.KEY_FILE, "w")
-    if not f then return end
-    f:write(tostring(DC.cursor_key))
-    f:close()
+    CFG.set("helper.cursor_key", DC.cursor_key)
 end
 
 function DC.key_load()
-    local f = io.open(DC.KEY_FILE, "r")
-    if not f then return end
-    local content = f:read("*a")
-    f:close()
-    local vk = tonumber(tostring(content or ""):match("%d+"))
-    if vk and vk >= 8 and vk <= 254 then DC.cursor_key = vk end
+    local vk = tonumber(CFG.get("helper.cursor_key"))
+    if vk and vk >= 8 and vk <= 254 then DC.cursor_key = math.floor(vk) end
 end
 
-DC.POS_FILE     = DATA_DIR .. "tp_pos.txt"
 DC.tp_pos       = nil
 DC.tp_last_pos  = nil
 DC.tp_default   = nil
 
 function DC.pos_load()
-    local f = io.open(DC.POS_FILE, "r")
-    if not f then return end
-    local content = f:read("*a")
-    f:close()
-    local x, y = tostring(content or ""):match("(-?[%d%.]+)%s+(-?[%d%.]+)")
-    x, y = tonumber(x), tonumber(y)
-    if x and y then DC.tp_pos = { x = x, y = y } end
+    local p = CFG.get("helper.window_pos")
+    if type(p) == "table" then
+        local x, y = tonumber(p.x), tonumber(p.y)
+        if x and y then DC.tp_pos = { x = x, y = y } end
+    end
 end
 
 function DC.pos_save_if_moved()
+    if DC.tut and DC.tut.active then return end
     local cur = DC.tp_last_pos
     if not cur then return end
     local old = DC.tp_pos or DC.tp_default
     if old and math.abs(old.x - cur.x) < 0.5 and math.abs(old.y - cur.y) < 0.5 then return end
     DC.tp_pos = { x = cur.x, y = cur.y }
-    local f = io.open(DC.POS_FILE, "w")
-    if not f then return end
-    f:write(string.format("%.1f %.1f", cur.x, cur.y))
-    f:close()
+    CFG.set("helper.window_pos", { x = math.floor(cur.x * 10 + 0.5) / 10, y = math.floor(cur.y * 10 + 0.5) / 10 })
 end
 
 function DC.key_name()
@@ -5182,6 +6232,7 @@ end
 
 function DC.tp_set_visible(v)
     DC.trace('tp_set_visible ' .. tostring(v))
+    if not v and DC.tut and DC.tut.active then DC.tut_finish(false, true) end
     if v and not DC.tp_timer.visible then
         DC.tp_timer.opened_at = os.time()
         DC.people_max = #unique_players_order
@@ -5189,6 +6240,7 @@ function DC.tp_set_visible(v)
     end
     DC.tp_timer.visible = v
     if not v then
+        if DC.tp_ext then DC.tp_ext.open, DC.tp_ext.p = false, 0 end
         DC.rebinding = false
         DC.tp_set_cursor(false)
         pcall(DC.alert_clear)
@@ -5229,6 +6281,7 @@ function DC.cursor_start_loop()
                         end
                     end
                 elseif wasKeyPressed(DC.cursor_key)
+                    and not DC.tut.active
                     and not DC.winner.open
                     and not sampIsChatInputActive()
                     and not sampIsDialogActive() then
@@ -5239,44 +6292,50 @@ function DC.cursor_start_loop()
     end)
 end
 
-DC.TP_FILE = DATA_DIR .. "tp_last.txt"
 
 function DC.tp_save()
-    local f = io.open(DC.TP_FILE, "w")
-    if not f then return end
-    f:write(string.format("%d %d", DC.tp_timer.end_epoch, DC.tp_timer.total))
-    f:close()
+    CFG.set("helper.last_teleport", { end_epoch = DC.tp_timer.end_epoch, total = DC.tp_timer.total })
 end
 
 function DC.tp_load()
-    local f = io.open(DC.TP_FILE, "r")
-    if not f then return end
-    local content = f:read("*a")
-    f:close()
-    local e, t = tostring(content or ""):match("(%d+)%s+(%d+)")
-    if e and t then
-        DC.tp_timer.end_epoch = tonumber(e)
-        DC.tp_timer.total     = tonumber(t)
+    local t = CFG.get("helper.last_teleport")
+    if type(t) ~= "table" then return end
+    local e, tt = tonumber(t.end_epoch), tonumber(t.total)
+    if e and tt then
+        DC.tp_timer.end_epoch = e
+        DC.tp_timer.total     = tt
     end
 end
 
-DC.AUTO_FILE = DATA_DIR .. "auto_mode.txt"
 DC.auto_mode = true
 
 function DC.auto_save()
-    local f = io.open(DC.AUTO_FILE, "w")
-    if not f then return end
-    f:write(DC.auto_mode and "1" or "0")
-    f:close()
+    CFG.set("helper.auto_mode", DC.auto_mode and true or false)
+end
+
+DC.ANTI_NAMES = { "Выключено", "Авто", "Предупреждать" }
+DC.anti_mode  = 3
+DC.anti_auto_t = {}
+
+function DC.anti_save()
+    CFG.set("helper.anti_mode", DC.anti_mode)
+end
+
+function DC.anti_load()
+    local v = tonumber(CFG.get("helper.anti_mode"))
+    if v and v >= 1 and v <= 3 then DC.anti_mode = math.floor(v) end
+end
+
+function DC.anti_cycle()
+    DC.anti_mode = DC.anti_mode % 3 + 1
+    DC.anti_save()
+    DC.trace("anti refill mode = " .. tostring(DC.anti_mode))
+    pcall(DC.alert_clear)
 end
 
 function DC.auto_load()
-    local f = io.open(DC.AUTO_FILE, "r")
-    if not f then return end
-    local content = f:read("*a")
-    f:close()
-    local v = tostring(content or "")
-    if v:find("[01]") then DC.auto_mode = v:find("1", 1, true) ~= nil end
+    local v = CFG.get("helper.auto_mode")
+    if type(v) == "boolean" then DC.auto_mode = v end
 end
 
 function DC.tp_timer_format(remaining)
@@ -5359,109 +6418,415 @@ function DC.sampev_onServerMessage(color, text)
     secs = tonumber(secs)
     if not secs then return end
     DC.trace('event started by me: seconds=' .. tostring(secs))
+    if DC.tut.active then DC.tut_finish(true, true) end
 
     DC.tp_timer.total     = secs
     DC.tp_timer.end_epoch = os.time() + secs
     DC.tp_set_visible(true)
     DC.tp_save()
     DC.tp_armed = true
+    pcall(DC.emenu_probe_schedule)
 end
 
-DC.ICON_DIR  = DATA_DIR .. "icons\\"
-
-DC.ICON_BASE_URL = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/icons/"
-DC.ICON_REV      = "r1"
-
-DC.ICON_VARIANTS = {
-    { key = "hourglass_green", size = 27, w = 27, h = 27 },
-    { key = "hourglass_red",   size = 27, w = 27, h = 27 },
-    { key = "stopwatch",       size = 27, w = 27, h = 27 },
-    { key = "person",          size = 16, w = 16, h = 16 },
-    { key = "people",          size = 16, w = 16, h = 16 },
-    { key = "coin",            size = 16, w = 16, h = 16 },
-    { key = "slot_free_on",    size = 32, w = 21, h = 23 },
-    { key = "slot_free_off",   size = 32, w = 21, h = 23 },
-    { key = "slot_busy_live",  size = 32, w = 21, h = 23 },
-    { key = "slot_busy_past",  size = 32, w = 21, h = 23 },
-    { key = "slot_past",       size = 32, w = 21, h = 23 },
-    { key = "color",           size = 18, w = 18, h = 18, file = "color" },
-}
-
-DC.ICON_SPEC = {}
-
-function DC.icon_specs_init()
-    for _, v in ipairs(DC.ICON_VARIANTS) do
-        DC.ICON_SPEC[v.key] = v
-    end
-end
-DC.icon_specs_init()
-
-DC.icon_ready  = {}
-DC.icon_tex    = {}
-DC.icon_failed = {}
-DC.tex_dirty   = false
+DC.TICON_SIZE = 32
 
 DC.UV0 = imgui.ImVec2(0, 0)
 DC.UV1 = imgui.ImVec2(1, 1)
 DC.WHITE4 = imgui.ImVec4(1, 1, 1, 1)
+DC.tex_dirty = false
 
-function DC.icon_name(key)
-    local v = DC.ICON_SPEC[key]
-    if v and v.file then return v.file .. ".png" end
-    return key .. "_" .. DC.ICON_REV .. ".png"
+DC.ICON_SPEC = {
+    hourglass_green = { names = { "ICON_HOURGLASS" } },
+    reload          = { names = { "ICON_REFRESH" } },
+    stopwatch       = { names = { "ICON_CLOCK_RECORD" } },
+    person          = { names = { "ICON_USER" } },
+    people          = { names = { "ICON_USERS" } },
+    coin            = { names = { "ICON_CURRENCY_DOLLAR" } },
+    slot_free_on    = { names = { "ICON_SQUARE_ROUNDED_PLUS" } },
+    slot_free_off   = { names = { "ICON_LOCK_SQUARE_ROUNDED" } },
+    slot_busy_live  = { names = { "ICON_ALERT_SQUARE_ROUNDED" } },
+    slot_busy_past  = { names = { "ICON_ALERT_SQUARE_ROUNDED" }, dim = 0.6 },
+    slot_past       = { names = { "ICON_LOCK_SQUARE_ROUNDED" }, dim = 0.6 },
+    color           = { names = { "ICON_PAINT" } },
+    close_square    = { names = { "ICON_SQUARE_ROUNDED_X" } },
+    caret_left      = { names = { "ICON_CHEVRON_LEFT" } },
+    caret_right     = { names = { "ICON_CHEVRON_RIGHT" } },
+}
+
+for i = 1, 12 do
+    DC.ICON_SPEC["clock" .. i] = { names = { "ICON_CLOCK_HOUR_" .. i } }
 end
 
-function DC.icon_path(key)
-    return DC.ICON_DIR .. DC.icon_name(key)
+DC.ICON_SPEC.trophy     = { names = { "ICON_TROPHY" } }
+DC.ICON_SPEC.heart      = { names = { "ICON_HEART" } }
+DC.ICON_SPEC.shield     = { names = { "ICON_SHIELD" } }
+DC.ICON_SPEC.snowflake  = { names = { "ICON_SNOWFLAKE" } }
+DC.ICON_SPEC.flame      = { names = { "ICON_FLAME" } }
+DC.ICON_SPEC.shield_off = { names = { "ICON_SHIELD_OFF" } }
+DC.ICON_SPEC.search     = { names = { "ICON_SEARCH" } }
+DC.ICON_SPEC.crown      = { names = { "ICON_CROWN" } }
+DC.ICON_SPEC.door_exit  = { names = { "ICON_DOOR_EXIT" } }
+DC.ICON_SPEC.check      = { names = { "ICON_CHECK" } }
+DC.ICON_SPEC.enter      = { names = { "ICON_CORNER_DOWN_LEFT" } }
+DC.ICON_SPEC.crosshair  = { names = { "ICON_CROSSHAIRS", "ICON_TARGET" } }
+DC.ICON_SPEC.modal_calendar = { names = { "ICON_CALENDAR_EVENT", "ICON_CALENDAR" } }
+DC.ICON_SPEC.modal_clock    = { names = { "ICON_CLOCK" } }
+DC.ICON_SPEC.modal_title    = { names = { "ICON_PENCIL", "ICON_EDIT" } }
+DC.ICON_SPEC.modal_save     = { names = { "ICON_DEVICE_FLOPPY", "ICON_CHECK" } }
+DC.ICON_SPEC.modal_delete   = { names = { "ICON_TRASH" } }
+DC.ICON_SPEC.modal_cancel   = { names = { "ICON_X" } }
+DC.ICON_SPEC.modal_alert    = { names = { "ICON_ALERT_TRIANGLE", "ICON_ALERT_CIRCLE" } }
+DC.ICON_SPEC.lock         = { names = { "ICON_LOCK" } }
+DC.ICON_SPEC.discord      = { names = { "ICON_BRAND_DISCORD" } }
+DC.ICON_SPEC.folder       = { names = { "ICON_FOLDER" } }
+DC.ICON_SPEC.folder_open  = { names = { "ICON_FOLDER_OPEN", "ICON_FOLDER" } }
+DC.ICON_SPEC.wand         = { names = { "ICON_WAND", "ICON_SPARKLES", "ICON_SEARCH" } }
+
+DC.ticon = { font = nil, range = nil, cfg = nil, err = nil }
+
+DC.TICONS_URL  = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/tabler_icons.lua"
+DC.TICONS_FILE = getWorkingDirectory() .. "\\lib\\tabler_icons.lua"
+
+function DC.ticons_local_size()
+    local f = io.open(DC.TICONS_FILE, "rb")
+    if not f then return nil end
+    local sz = f:seek("end") or 0
+    f:close()
+    return sz
 end
 
-function DC.icon_prepare(key)
-    local path = DC.icon_path(key)
-    if not DC.is_image_file(path) then
-        local url = DC.ICON_BASE_URL .. DC.icon_name(key)
-        local ch = effil.channel()
-        local ok, thr = pcall(DC.effil_start, DC.avatar_worker, ch, url, path)
-        if ok then
-            local r = wait_for_channel(ch, 25000, thr)
-            if r == nil then pcall(function() thr:cancel(0) end) end
-            if not (r and r.ok) then
-                DC.print("[EventScan] Не удалось скачать иконку " .. key .. ": " .. tostring(r and r.err or "timeout"))
+function DC.ticons_ensure()
+    local lsize = DC.ticons_local_size()
+    local ok_req, requests = pcall(require, "requests")
+    if not ok_req or type(requests) ~= "table" then
+        DC.trace("ticons: requests module unavailable, local=" .. tostring(lsize))
+        return lsize ~= nil
+    end
+    local opts = { headers = { ["User-Agent"] = "SAMP-EventScan/1.4" }, timeout = 15 }
+
+    local remote_size
+    local okh, rh = pcall(requests.head, DC.TICONS_URL, opts)
+    if okh and type(rh) == "table" and rh.status_code == 200 and type(rh.headers) == "table" then
+        for k, v in pairs(rh.headers) do
+            if tostring(k):lower() == "content-length" then remote_size = tonumber(v) end
+        end
+    end
+    if lsize and remote_size and lsize == remote_size then
+        DC.trace("ticons: up to date, size=" .. lsize)
+        return true
+    end
+
+    local okg, resp = pcall(requests.get, DC.TICONS_URL, { headers = opts.headers, timeout = 30 })
+    if not okg or type(resp) ~= "table" or resp.status_code ~= 200
+       or type(resp.text) ~= "string" or #resp.text < 1024 then
+        DC.trace("ticons: download failed (" .. tostring(okg and resp and resp.status_code or resp) .. "), local=" .. tostring(lsize))
+        return lsize ~= nil
+    end
+    if lsize and #resp.text == lsize then
+        DC.trace("ticons: up to date (GET), size=" .. lsize)
+        return true
+    end
+
+    pcall(lfs.mkdir, getWorkingDirectory() .. "\\lib")
+    local tmp = DC.TICONS_FILE .. ".tmp"
+    local f = io.open(tmp, "wb")
+    if not f then
+        DC.trace("ticons: cannot write " .. tmp)
+        return lsize ~= nil
+    end
+    f:write(resp.text)
+    f:close()
+    os.remove(DC.TICONS_FILE)
+    if not os.rename(tmp, DC.TICONS_FILE) then
+        DC.trace("ticons: rename failed")
+        os.remove(tmp)
+        return false
+    end
+    package.loaded["tabler_icons"] = nil
+    DC.trace(string.format("ticons: updated, %s -> %d bytes", tostring(lsize), #resp.text))
+    return true
+end
+
+do
+    local ok, res = pcall(DC.ticons_ensure)
+    if not ok then DC.trace("ticons: ensure ERROR: " .. tostring(res)) end
+end
+
+function DC.ticon_code(s)
+    local b1, b2, b3, b4 = s:byte(1, 4)
+    if not b1 then return nil end
+    if b1 < 0x80 then return b1 end
+    if b1 < 0xE0 then return (b1 - 0xC0) * 0x40 + (b2 - 0x80) end
+    if b1 < 0xF0 then return (b1 - 0xE0) * 0x1000 + (b2 - 0x80) * 0x40 + (b3 - 0x80) end
+    return (b1 - 0xF0) * 0x40000 + (b2 - 0x80) * 0x1000 + (b3 - 0x80) * 0x40 + (b4 - 0x80)
+end
+
+function DC.ticon_resolve(ti, name)
+    if type(name) ~= "string" or name == "" then return nil end
+    if name:match("^0[xX]%x+$") then
+        local ok, g = pcall(ti, tonumber(name))
+        return (ok and type(g) == "string" and g ~= "") and g or nil
+    end
+    local key = name:upper():gsub("%-", "_")
+    if not key:find("^ICON_") then key = "ICON_" .. key end
+    local okc, v = pcall(function() return ti[key] end)
+    if okc then
+        if type(v) == "string" and v ~= "" then return v end
+        if type(v) == "number" then
+            local ok, g = pcall(ti, v)
+            if ok and type(g) == "string" and g ~= "" then return g end
+        end
+    end
+    local slug = (name:lower():gsub("^icon_", ""):gsub("_", "-"))
+    local ok, g = pcall(ti, slug)
+    if ok and type(g) == "string" and g ~= "" then return g end
+    return nil
+end
+
+function DC.ticon_init(io)
+    local T = DC.ticon
+    local ok_ti, ti = pcall(require, "tabler_icons")
+    if not ok_ti or not ti then
+        T.err = "tabler_icons не найден (нужен moonloader/lib/tabler_icons.lua)"
+        return
+    end
+
+    local codes, seen = {}, {}
+    for _, spec in pairs(DC.ICON_SPEC) do
+        for _, nm in ipairs(spec.names) do
+            local g = DC.ticon_resolve(ti, nm)
+            local c = g and DC.ticon_code(g)
+            if c then
+                spec.glyph = g
+                if not seen[c] then seen[c] = true; codes[#codes + 1] = c end
+                break
             end
-        else
-            DC.print("[EventScan] Не удалось запустить загрузку иконки " .. key .. ": " .. tostring(thr))
         end
     end
-    if DC.is_image_file(path) then
-        DC.icon_ready[key] = true
-    else
-        os.remove(path)
+    if #codes == 0 then T.err = "ни один глиф не найден"; return end
+    table.sort(codes)
+
+    local list = {}
+    for _, c in ipairs(codes) do list[#list + 1] = c; list[#list + 1] = c end
+    list[#list + 1] = 0
+    T.range = imgui.new.ImWchar[#list](unpack(list))
+
+    if not custom_font and not toast_font then
+        pcall(function() io.Fonts:AddFontDefault() end)
     end
-    DC.tex_dirty = true
+
+    local cfg = imgui.ImFontConfig()
+    cfg.MergeMode   = false
+    cfg.PixelSnapH  = true
+    cfg.OversampleH = 2
+    cfg.OversampleV = 2
+    T.cfg = cfg
+    local font = io.Fonts:AddFontFromMemoryCompressedBase85TTF(ti.get_font_data_base85(), DC.TICON_SIZE, cfg, T.range)
+    if font then T.font = font else T.err = "не удалось добавить шрифт иконок" end
 end
 
-function DC.icons_download()
-    pcall(lfs.mkdir, DC.ICON_DIR)
+imgui.OnInitialize(function()
+    local ok_io, io = pcall(imgui.GetIO)
+    if not ok_io or not io then return end
+    local ok, err = pcall(DC.ticon_init, io)
+    if not ok then DC.ticon.err = tostring(err) end
+    DC.trace("ticon: font=" .. tostring(DC.ticon.font ~= nil) .. " err=" .. tostring(DC.ticon.err))
+end)
 
-    for _, base in ipairs({ "hourglass", "person", "people", "stopwatch", "coin",
-                            "slot_free", "slot_busy", "slot_past" }) do
-        os.remove(DC.ICON_DIR .. base .. "_src.png")
-        os.remove(DC.ICON_DIR .. base .. "_src.png.ps1")
-        os.remove(DC.ICON_DIR .. base .. ".png")
-        for _, sz in ipairs({ 16, 24, 27, 32, 40 }) do
-            os.remove(DC.ICON_DIR .. base .. "_" .. sz .. ".png")
+function DC.icon_get(key)
+    local spec = DC.ICON_SPEC[key]
+    if DC.ticon.font and spec and spec.glyph then return key end
+    return nil
+end
+
+function DC.icon_color(key, col32)
+    if col32 then return col32 end
+    local spec = DC.ICON_SPEC[key] or {}
+    local c = spec.color
+    if c and c ~= "theme" then return DC.u32(hexcol(c)) end
+    local n   = DC.theme_n
+    local mix = 0.5
+    local k   = 0.82 * (spec.dim or 1)
+    return DC.u32(imgui.ImVec4(
+        (n[1] + (1 - n[1]) * mix) * k,
+        (n[2] + (1 - n[2]) * mix) * k,
+        (n[3] + (1 - n[3]) * mix) * k, 1))
+end
+
+function DC.icon_put(key, x, y, w, h, col32, angle, sx, sy, ox, oy)
+    local T, spec = DC.ticon, DC.ICON_SPEC[key]
+    if not (T.font and spec and spec.glyph) then return false end
+    local col = DC.icon_color(key, col32)
+    local drawn = false
+    imgui.PushFont(T.font)
+    local ok, err = pcall(function()
+        if not spec.nw then
+            local v = imgui.CalcTextSize(spec.glyph)
+            spec.nw, spec.nh = math.max(v.x, 1), math.max(v.y, 1)
         end
-    end
-    os.remove(DATA_DIR .. "espl_avatar_src.png")
-
-    for _, v in ipairs(DC.ICON_VARIANTS) do
-        local key = v.key
-        DC.spawn(function()
-            local ok, err = pcall(DC.icon_prepare, key)
-            if not ok then
-                DC.print("[EventScan] Ошибка подготовки иконки " .. key .. ": " .. tostring(err))
+        local sc = math.min(w, h) / spec.nw
+        local px = math.floor(x + (w - spec.nw * sc) / 2 + 0.5)
+        local py = math.floor(y + (h - spec.nh * sc) / 2 + 0.5)
+        pcall(imgui.SetWindowFontScale, sc)
+        local okd, e2 = pcall(function()
+            local dl = imgui.GetWindowDrawList()
+            local xf = angle ~= nil
+            local n0 = xf and dl.VtxBuffer.Size or 0
+            dl:AddText(imgui.ImVec2(px, py), col, spec.glyph)
+            if xf then
+                sx, sy, ox, oy = sx or 1, sy or 1, ox or 0, oy or 0
+                local cx, cy = x + w / 2, y + h / 2
+                local ca, sa = math.cos(angle), math.sin(angle)
+                for i = n0, dl.VtxBuffer.Size - 1 do
+                    local v = dl.VtxBuffer.Data[i].pos
+                    local dx, dy = (v.x - cx) * sx, (v.y - cy) * sy
+                    v.x = cx + ox + dx * ca - dy * sa
+                    v.y = cy + oy + dx * sa + dy * ca
+                end
             end
         end)
+        pcall(imgui.SetWindowFontScale, 1.0)
+        if not okd then error(e2, 0) end
+        drawn = true
+    end)
+    imgui.PopFont()
+    if not ok and not DC.ticon_draw_err then
+        DC.ticon_draw_err = true
+        DC.trace("icon_put ERROR (" .. tostring(key) .. "): " .. tostring(err))
     end
+    return drawn
+end
+
+DC.HG_T = 2.6
+
+function DC.hg_state()
+    local PI = math.pi
+    local t  = os.clock() % DC.HG_T
+    local function ease(k) return k * k * (3 - 2 * k) end
+    local MIN = 0.80
+
+    local ang, sc = 0, 1
+
+    if t < 0.35 then
+        local e = ease(t / 0.35)
+        ang = -0.25 * e
+        sc  = 1 - (1 - MIN) * e
+    elseif t < 1.25 then
+        local k = (t - 0.35) / 0.90
+        local e = k < 0.5 and 4 * k ^ 3 or 1 - (-2 * k + 2) ^ 3 / 2
+        ang = -0.25 + (PI + 0.45) * e
+        sc  = MIN
+    elseif t < 1.80 then
+        local k = (t - 1.25) / 0.55
+        ang = PI + 0.20 * math.exp(-5 * k) * math.cos(10 * k)
+        local g = ease(math.min(k * 1.4, 1))
+        sc  = MIN + (1 - MIN) * g + 0.04 * math.sin(PI * math.min(k * 1.4, 1)) * (1 - k)
+    else
+        local u = t - 1.80
+        ang = PI + 0.05 * math.exp(-3 * u) * math.sin(8 * u)
+    end
+
+    return sc, sc, ang, 0
+end
+
+function DC.hg_draw(key, size, col32)
+    if not DC.icon_get(key) then return false end
+    local p = imgui.GetCursorScreenPos()
+    imgui.Dummy(imgui.ImVec2(size, size))
+    local sx, sy, ang, oy = DC.hg_state()
+    return DC.icon_put(key, p.x, p.y, size, size, col32, ang, sx, sy, 0, oy * size)
+end
+
+function DC.icon_draw(key, size, col32)
+    if not DC.icon_get(key) then return false end
+    local p = imgui.GetCursorScreenPos()
+    imgui.Dummy(imgui.ImVec2(size, size))
+    return DC.icon_put(key, p.x, p.y, size, size, col32)
+end
+
+function DC.icon_fit(key, mn, mx, col32)
+    if not DC.icon_get(key) then return false end
+    return DC.icon_put(key, mn.x, mn.y, mx.x - mn.x, mx.y - mn.y, col32)
+end
+
+function DC.slot_icon(key, pos, w, h, col32)
+    local size = 30
+    local dl = imgui.GetWindowDrawList()
+    dl:PushClipRect(
+        imgui.ImVec2(pos.x + 1, pos.y + 1),
+        imgui.ImVec2(pos.x + w - 1, pos.y + h - 1),
+        true)
+    local cx = pos.x + w - 9
+    local cy = pos.y + h - 9
+    DC.icon_put(key, math.floor(cx - size / 2), math.floor(cy - size / 2), size, size, col32)
+    dl:PopClipRect()
+end
+
+function DC.btn_ic(id, label, size, key, col)
+    local clicked = imgui.Button("##" .. id, size)
+    local mn, mx = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+    local c32 = DC.u32(col or imgui.ImVec4(1, 1, 1, 1))
+    local lh  = imgui.GetTextLineHeight()
+    local isz = math.floor(lh)
+    local has = DC.icon_get(key) ~= nil
+    local tw  = imgui.CalcTextSize(label).x
+    local gap = (tw > 0) and 6 or 0
+    local total = tw + (has and (isz + gap) or 0)
+    local x  = math.floor((mn.x + mx.x - total) / 2 + 0.5)
+    local cy = (mn.y + mx.y) / 2
+    if has then
+        DC.icon_put(key, x, math.floor(cy - isz / 2 + 0.5), isz, isz, c32)
+        x = x + isz + gap
+    end
+    imgui.GetWindowDrawList():AddText(imgui.ImVec2(x, math.floor(cy - lh / 2 + 0.5)), c32, label)
+    return clicked
+end
+
+function DC.cbtn(id, label, size, icon, c, filled, tcol, off)
+    c = c or imgui.ImVec4(1, 1, 1, 1)
+    local a1, a2, a3, ab = filled and 0.30 or 0.08, filled and 0.50 or 0.16, filled and 0.70 or 0.26, filled and 0.90 or 0.35
+    if off then
+        c = imgui.ImVec4(0.6, 0.65, 0.6, 1)
+        a1, a2, a3, ab = 0.08, 0.08, 0.08, 0.25
+        tcol = imgui.ImVec4(1, 1, 1, 0.40)
+    end
+    imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(c.x, c.y, c.z, a1))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(c.x, c.y, c.z, a2))
+    imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(c.x, c.y, c.z, a3))
+    imgui.PushStyleColor(imgui.Col.Border,        imgui.ImVec4(c.x, c.y, c.z, ab))
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 1.5)
+    local r = DC.btn_ic(id, label, size, icon, tcol or imgui.ImVec4(1, 1, 1, 1))
+    imgui.PopStyleVar(1)
+    imgui.PopStyleColor(4)
+    return r
+end
+
+function DC.toast_icon_w(text, line_h)
+    if text ~= u8("Готово!") or not DC.icon_get("check") then return 0 end
+    return math.floor(line_h * 0.9) + 6
+end
+
+function DC.toast_icon_draw(line_h, color, alpha)
+    local ic = math.floor(line_h * 0.9)
+    local p  = imgui.GetCursorScreenPos()
+    local c  = color or imgui.ImVec4(1, 1, 1, 1)
+    DC.icon_put("check", p.x, p.y + (line_h - ic) / 2, ic, ic,
+        imgui.ColorConvertFloat4ToU32(imgui.ImVec4(c.x, c.y, c.z, alpha)))
+end
+
+function DC.enter_w(line_h)
+    if not DC.icon_get("enter") then return 0 end
+    return math.floor(line_h * 0.95) + 4
+end
+
+function DC.btn_icon(key, fallback)
+    local mn, mx = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+    local col = DC.u32(DC.WHITE4)
+    if DC.icon_fit(key, mn, mx) then return end
+    local ts = imgui.CalcTextSize(fallback)
+    imgui.GetWindowDrawList():AddText(
+        imgui.ImVec2(math.floor((mn.x + mx.x - ts.x) / 2 + 0.5), math.floor((mn.y + mx.y - ts.y) / 2 + 0.5)),
+        col, fallback)
 end
 
 DC.tex_frame = imgui.OnFrame(function()
@@ -5471,27 +6836,19 @@ end, function()
 
     DC.tex_release()
 
-    for key in pairs(DC.ICON_SPEC) do
-        if DC.icon_ready[key] and not DC.icon_tex[key] and not DC.icon_failed[key] then
-            local path = DC.icon_path(key)
-            DC.trace("tex_frame: creating icon " .. tostring(key))
-            local ok, t = pcall(imgui.CreateTextureFromFile, path)
-            if ok and t then
-                DC.icon_tex[key] = t
-            else
-                DC.icon_failed[key] = true
-                os.remove(path)
-            end
-        end
-    end
-
     if espl_panel.avatar_ready and not espl_panel.avatar_tex then
         DC.trace("tex_frame: creating avatar texture")
-        local ok_tex, tex = pcall(imgui.CreateTextureFromFile, espl_panel.avatar_file)
+        local raw = espl_panel.avatar_raw
+        local ok_tex, tex = false, nil
+        if raw then
+            ok_tex, tex = pcall(function()
+                return imgui.CreateTextureFromFileInMemory(imgui.new('const char*', raw), #raw)
+            end)
+        end
         DC.trace("tex_frame: avatar texture ok=" .. tostring(ok_tex) .. " tex=" .. tostring(tex))
         if ok_tex and tex then
             espl_panel.avatar_tex = tex
-            local ok_uv, uv0, uv1 = pcall(DC.cover_uv, espl_panel.avatar_file)
+            local ok_uv, uv0, uv1 = pcall(DC.cover_uv_raw, raw)
             if ok_uv and uv0 and uv1 then
                 espl_panel.avatar_uv0, espl_panel.avatar_uv1 = uv0, uv1
             else
@@ -5500,34 +6857,496 @@ end, function()
         end
         espl_panel.avatar_ready = false
         if not espl_panel.avatar_tex then
-            os.remove(espl_panel.avatar_file)
-            DC.print("[EventScan] Не удалось создать текстуру аватарки, файл удалён.")
+            espl_panel.avatar_raw = nil
+            CFG.set("avatar.png_b64", nil)
+            DC.print("[EventScan] Не удалось создать текстуру аватарки, кэш очищен.")
         end
     end
 end)
 DC.tex_frame.HideCursor = true
 
-function DC.icon_get(key)
-    return DC.icon_tex[key]
-end
-
-function DC.icon_params(key)
-    local tex = DC.icon_tex[key]
-    if not tex then return nil end
-    return tex, DC.UV0, DC.UV1, DC.WHITE4, 0xFFFFFFFF
-end
-
-function DC.icon_draw(key, size)
-    local tex, uv0, uv1, tint = DC.icon_params(key)
-    if not tex then return false end
-    imgui.Image(tex, imgui.ImVec2(size, size), uv0, uv1, tint)
-    return true
+do
+    local b64 = CFG.get("avatar.png_b64")
+    if type(b64) == "string" and #b64 > 100 then
+        local raw = CFG.b64dec(b64)
+        if raw and #raw > 100 and (raw:sub(1, 4) == "\137PNG" or raw:sub(1, 2) == "\255\216") then
+            espl_panel.avatar_raw   = raw
+            espl_panel.avatar_ready = true
+            DC.tex_dirty = true
+        else
+            CFG.set("avatar.png_b64", nil)
+        end
+    end
 end
 
 DC.FREEZE_CD       = 5
 DC.freeze_cd_until = 0
 
 DC.TP_WIN_W = 310
+DC.TP_EXT_COLS = 2
+DC.TP_EXT_COLW = 104
+DC.TP_EXT_GAP  = 8
+DC.TP_EXT_W = DC.TP_EXT_COLS * DC.TP_EXT_COLW + (DC.TP_EXT_COLS - 1) * DC.TP_EXT_GAP + 16
+DC.TP_EXT_ROWS = 6
+DC.tp_ext = { open = false, p = 0, view = "main" }
+
+DC.GUNS = {
+    { 0, "Кулак" },
+    { 1, "Кастет" },
+    { 2, "Клюшка для гольфа" },
+    { 3, "Полицейская дубинка" },
+    { 5, "Бейсбольная бита" },
+    { 6, "Лопата" },
+    { 7, "Кий" },
+    { 8, "Катана" },
+    { 9, "Бензопила" },
+    { 10, "Фиолетовое дилдо" },
+    { 11, "Короткое дилдо" },
+    { 12, "Вибратор" },
+    { 13, "Серебристое дилдо" },
+    { 14, "Букет цветов" },
+    { 15, "Трость" },
+    { 17, "Слезоточивый газ" },
+    { 22, "Кольт 45" },
+    { 23, "Пистолет с глушителем" },
+    { 24, "Desert Eagle" },
+    { 25, "Дробовик" },
+    { 26, "Обрезы" },
+    { 27, "Боевой дробовик" },
+    { 28, "Узи" },
+    { 29, "MP5" },
+    { 30, "АК-47" },
+    { 31, "M4" },
+    { 32, "Tec-9" },
+    { 33, "Винтовка" },
+    { 34, "Снайперская винтовка" },
+    { 38, "Миниган" },
+    { 40, "Пульт с кнопкой" },
+    { 41, "Баллончик с краской" },
+    { 42, "Огнетушитель" },
+    { 43, "Фотокамера" },
+    { 46, "Парашют" },
+    { 71, "Серебряный дигл" },
+    { 72, "Золотой дигл" },
+    { 73, "Глок «Градиент»" },
+    { 74, "Дигл «Пламя»" },
+    { 75, "Кольт «Королевский»" },
+    { 76, "Кольт «Серебряный»" },
+    { 77, "АК-47 «Розы»" },
+    { 78, "АК-47 «Золотой»" },
+    { 79, "M249 «Граффити»" },
+    { 80, "Сайга «Золото»" },
+    { 81, "ППШ" },
+    { 82, "M249" },
+    { 83, "Скорпион" },
+    { 84, "АКС-74 «Камуфляжный»" },
+    { 85, "АК-47 «Камуфляжный»" },
+    { 86, "Дробовик Ребекки" },
+    { 87, "Doomgun" },
+    { 88, "Ледяной меч" },
+    { 89, "Портальная пушка" },
+    { 90, "Оглушающая граната" },
+    { 91, "Ослепляющая граната" },
+    { 92, "McMillan TAC-50" },
+    { 93, "Оглушающий пистолет" },
+    { 94, "Снежная пушка" },
+    { 95, "Пиксельный бластер" },
+    { 96, "Золотая M4" },
+    { 97, "Бандитский дробовик" },
+    { 98, "Узи «Граффити»" },
+    { 99, "Золотая монтировка" },
+    { 100, "Бейсбольная бита Compton" },
+    { 101, "Sci-Fi Deagle" },
+    { 102, "Sci-Fi AK-47" },
+    { 103, "Sci-Fi Дробовик" },
+    { 104, "Sci-Fi Нож" },
+    { 105, "Сканер" },
+    { 106, "Золотой нож" },
+    { 107, "Катана Нир" },
+    { 108, "Невидимый нож" },
+    { 109, "Тазер" },
+    { 110, "Огненная кирка" },
+}
+DC.gun = {
+    radius = 100, ammo = 500, sel = nil,
+    labels = nil, keys = nil,
+    search = imgui_new.char[64](0), focus = false,
+    q_prev = nil, filtered = nil,
+    pop_seq = 0, is_open = false, fmin = nil, fmax = nil,
+}
+
+function DC.lower_u8(str)
+    str = str:lower()
+    str = str:gsub("\208([\144-\159])", function(c) return "\208" .. string.char(c:byte() + 32) end)
+    str = str:gsub("\208([\160-\175])", function(c) return "\209" .. string.char(c:byte() - 32) end)
+    str = str:gsub("\208\129", "\209\145")
+    return str
+end
+
+function DC.gun_prepare()
+    local G = DC.gun
+    if G.labels then return end
+    G.labels, G.keys = {}, {}
+    for i, g in ipairs(DC.GUNS) do
+        local nm = u8(g[2])
+        G.labels[i] = nm
+        G.keys[i]   = DC.lower_u8(nm)
+    end
+end
+
+function DC.gun_reset_values()
+    local G = DC.gun
+    G.radius  = 100
+    G.ammo    = 500
+    G.pop_seq = G.pop_seq + 1
+    G.is_open = false
+    G.q_prev  = nil
+end
+
+function DC.gun_filter(q)
+    local G = DC.gun
+    if G.q_prev == q and G.filtered then return G.filtered end
+    local ql  = DC.lower_u8(q)
+    local res = {}
+    for i, g in ipairs(DC.GUNS) do
+        if ql == "" or G.keys[i]:find(ql, 1, true) or tostring(g[1]):sub(1, #ql) == ql then
+            res[#res + 1] = i
+        end
+    end
+    G.q_prev, G.filtered = q, res
+    return res
+end
+
+function DC.fancy_slider(id, label, val, vmin, vmax, x, y, w, h, icon)
+    imgui.SetCursorPos(imgui.ImVec2(x, y))
+    imgui.InvisibleButton(id, imgui.ImVec2(w, h))
+    local active, hov = imgui.IsItemActive(), imgui.IsItemHovered()
+    local mn, mx = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+    local r  = 5
+    local ty = mx.y - 8
+    local tx0, tx1 = mn.x + 12 + r, mx.x - 12 - r
+    if active then
+        local t = (imgui.GetIO().MousePos.x - tx0) / (tx1 - tx0)
+        t = math.max(0, math.min(1, t))
+        val = math.floor(vmin + t * (vmax - vmin) + 0.5)
+    end
+    local t  = (val - vmin) / (vmax - vmin)
+    local dl = imgui.GetWindowDrawList()
+    dl:AddRectFilled(mn, mx, DC.u32(imgui.ImVec4(1, 1, 1, (hov or active) and 0.08 or 0.045)), 8)
+    local lx = mn.x + 12
+    if icon and DC.icon_get(icon) then
+        local isz = math.floor(imgui.GetFontSize())
+        DC.icon_put(icon, lx, mn.y + 2, isz, isz, DC.u32(DC.tc(0.65, 0.75, 0.65, 1)))
+        lx = lx + isz + 5
+    end
+    dl:AddText(imgui.ImVec2(lx, mn.y + 2), DC.u32(DC.tc(0.65, 0.75, 0.65, 1)), label)
+    local vs = tostring(val)
+    dl:AddText(imgui.ImVec2(mx.x - 12 - imgui.CalcTextSize(vs).x, mn.y + 2), DC.u32(hexcol(GREEN_BRIGHT)), vs)
+    dl:AddRectFilled(imgui.ImVec2(tx0 - r, ty - 2), imgui.ImVec2(tx1 + r, ty + 2),
+        DC.u32(imgui.ImVec4(1, 1, 1, 0.10)), 2)
+    local kx = tx0 + (tx1 - tx0) * t
+    dl:AddRectFilled(imgui.ImVec2(tx0 - r, ty - 2), imgui.ImVec2(kx, ty + 2), DC.u32(hexcol(GREEN_MID)), 2)
+    local kr = r
+    dl:AddCircleFilled(imgui.ImVec2(kx, ty), kr, DC.u32(imgui.ImVec4(1, 1, 1, 1)), 20)
+    dl:AddCircle(imgui.ImVec2(kx, ty), kr, DC.u32(hexcol(GREEN_BRIGHT)), 20, 1.5)
+    return val
+end
+
+function DC.gun_field(x, y, w, h)
+    local G = DC.gun
+    imgui.SetCursorPos(imgui.ImVec2(x, y))
+    local clicked = imgui.InvisibleButton("##es_gun_field", imgui.ImVec2(w, h))
+    local hov = imgui.IsItemHovered()
+    local mn, mx = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+    G.fmin, G.fmax = mn, mx
+    if clicked then
+        G.search[0] = 0
+        G.focus   = true
+        G.q_prev  = nil
+        G.is_open = true
+        imgui.OpenPopup("##es_gun_pop" .. G.pop_seq)
+    end
+    local dl = imgui.GetWindowDrawList()
+    dl:AddRectFilled(mn, mx, DC.u32(imgui.ImVec4(1, 1, 1, (hov or G.is_open) and 0.08 or 0.045)), 8)
+    if G.is_open then
+        dl:AddRect(mn, mx, DC.u32(hexcol(GREEN_MID, 0.9)), 8, 15, 1.5)
+    end
+    local ty = mn.y + (h - imgui.GetFontSize()) / 2
+    if G.sel then
+        local g = DC.GUNS[G.sel]
+        local txt = G.labels[G.sel] .. "  [" .. g[1] .. "]"
+        dl:AddText(imgui.ImVec2(mn.x + 12, ty), DC.u32(imgui.ImVec4(1, 1, 1, 1)),
+            espl_truncate_to_width(txt, w - 12 - 34))
+    else
+        dl:AddText(imgui.ImVec2(mn.x + 12, ty), DC.u32(imgui.ImVec4(1, 1, 1, 0.45)), u8("Выберите оружие"))
+    end
+    local cx, cy = mx.x - 20, (mn.y + mx.y) / 2
+    local col = DC.u32(G.is_open and hexcol(GREEN_BRIGHT) or DC.tc(0.65, 0.75, 0.65, 1))
+    if G.is_open then
+        dl:AddTriangleFilled(imgui.ImVec2(cx - 5, cy + 3), imgui.ImVec2(cx + 5, cy + 3), imgui.ImVec2(cx, cy - 4), col)
+    else
+        dl:AddTriangleFilled(imgui.ImVec2(cx - 5, cy - 3), imgui.ImVec2(cx + 5, cy - 3), imgui.ImVec2(cx, cy + 4), col)
+    end
+end
+
+function DC.gun_popup(w)
+    local G = DC.gun
+    if not G.fmin then return end
+    local io    = imgui.GetIO()
+    local pad   = 8
+    local cw    = w - pad * 2
+    local rowh  = 28
+    local list_h = 7 * rowh
+    local in_h  = imgui.GetFontSize() + 12
+    local total = pad * 2 + in_h + 6 + list_h
+    local px, py = G.fmin.x, G.fmax.y + 4
+    if py + total > io.DisplaySize.y - 4 then py = G.fmin.y - 4 - total end
+    imgui.SetNextWindowPos(imgui.ImVec2(px, py), imgui.Cond.Always)
+
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 10)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 1.5)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(pad, pad))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(6, 6))
+    imgui.PushStyleColor(imgui.Col.PopupBg, DC.tc(0.05, 0.08, 0.05, 0.98))
+    imgui.PushStyleColor(imgui.Col.Border, hexcol(GREEN_MID))
+
+    local open = imgui.BeginPopup("##es_gun_pop" .. G.pop_seq)
+    if open then
+        imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(34, 6))
+        imgui.PushItemWidth(cw)
+        if G.focus then
+            imgui.SetKeyboardFocusHere()
+            G.focus = false
+        end
+        local entered = imgui.InputText("##es_gun_search", G.search, ffi.sizeof(G.search),
+            imgui.InputTextFlags.EnterReturnsTrue)
+        local smin, smax = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+        do
+            local isz = math.floor(imgui.GetFontSize())
+            DC.icon_put("search", smin.x + 11, smin.y + (smax.y - smin.y - isz) / 2, isz, isz,
+                DC.u32(imgui.ImVec4(1, 1, 1, 0.55)))
+        end
+        imgui.PopItemWidth()
+        imgui.PopStyleVar(1)
+
+        local q = ffi.string(G.search)
+        if q == "" then
+            imgui.GetWindowDrawList():AddText(imgui.ImVec2(smin.x + 34, smin.y + 6),
+                DC.u32(imgui.ImVec4(1, 1, 1, 0.35)), u8("Поиск: название или ID"))
+        end
+        local list = DC.gun_filter(q:match("^%s*(.-)%s*$"))
+        if entered and #list > 0 then
+            G.sel = list[1]
+            imgui.CloseCurrentPopup()
+        end
+
+        imgui.BeginChild("##es_gun_list", imgui.ImVec2(cw, list_h), false)
+        imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(0, 2))
+        if #list == 0 then
+            imgui.Dummy(imgui.ImVec2(1, 8))
+            center_text(u8("Ничего не найдено"), imgui.ImVec4(1, 1, 1, 0.45))
+        end
+        local dl = imgui.GetWindowDrawList()
+        for _, i in ipairs(list) do
+            local gun = DC.GUNS[i]
+            if imgui.Selectable("##es_gun_row" .. gun[1], G.sel == i, 0, imgui.ImVec2(0, rowh)) then
+                G.sel = i
+                imgui.CloseCurrentPopup()
+            end
+            local rmin, rmax = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+            local ids = tostring(gun[1])
+            local idw = imgui.CalcTextSize(ids).x
+            local ty  = rmin.y + (rowh - imgui.GetFontSize()) / 2
+            dl:AddText(imgui.ImVec2(rmin.x + 10, ty), DC.u32(imgui.ImVec4(1, 1, 1, 1)),
+                espl_truncate_to_width(G.labels[i], rmax.x - rmin.x - 10 - idw - 22))
+            dl:AddText(imgui.ImVec2(rmax.x - 10 - idw, ty),
+                DC.u32(G.sel == i and hexcol(GREEN_BRIGHT) or imgui.ImVec4(1, 1, 1, 0.40)), ids)
+        end
+        imgui.PopStyleVar(1)
+        imgui.EndChild()
+        imgui.EndPopup()
+    end
+    G.is_open = open
+
+    imgui.PopStyleColor(2)
+    imgui.PopStyleVar(4)
+end
+
+DC.gun_last = nil
+
+function DC.gun_index(id)
+    for i, g in ipairs(DC.GUNS) do
+        if g[1] == id then return i end
+    end
+    return nil
+end
+
+function DC.gun_last_save()
+    local L = DC.gun_last
+    if not L then return end
+    CFG.set("helper.last_gun", { radius = L.radius, id = L.id, ammo = L.ammo })
+end
+
+function DC.gun_last_load()
+    local t = CFG.get("helper.last_gun")
+    if type(t) ~= "table" then return end
+    local r, id, a = tonumber(t.radius), tonumber(t.id), tonumber(t.ammo)
+    if r and id and a and DC.gun_index(id) then
+        DC.gun_last = { radius = r, id = id, ammo = a }
+    end
+end
+
+function DC.gun_give(radius, id, ammo)
+    radius = math.max(1, math.min(100, radius))
+    ammo   = math.max(1, math.min(500, ammo))
+    DC.send_cmd(string.format("/gunall %d %d %d", radius, id, ammo))
+    DC.hp_cd_until = os.clock() + DC.HP_CD
+    DC.gun_last = { radius = radius, id = id, ammo = ammo }
+    DC.gun_last_save()
+end
+
+function DC.ext_guns(px, top, full, H, padv)
+    DC.gun_prepare()
+    local EXT, G = DC.tp_ext, DC.gun
+    local n, g, hh = 5, 6, 26
+    local rh = math.floor((H - padv * 2 - hh - g * n) / n)
+    local y0 = top + hh + g
+    local function row(k) return y0 + k * (rh + g) end
+
+    imgui.SetCursorPos(imgui.ImVec2(px, top))
+    local gback_clicked = DC.cbtn("es_gun_back", DC.icon_get("caret_left") and "" or "<", imgui.ImVec2(32, hh),
+        "caret_left", imgui.ImVec4(1, 1, 1, 1), false, DC.tc(0.65, 0.75, 0.65, 1))
+    if gback_clicked then
+        EXT.view = "main"
+    end
+    DC.trec("gun_back")
+    DC.tip("gun_back", u8("Назад"))
+    do
+        local title = u8("Выдача оружия")
+        imgui.SetCursorPos(imgui.ImVec2(px + 32 + 10, top + (hh - imgui.GetFontSize()) / 2))
+        imgui.TextColored(DC.tc(0.65, 0.75, 0.65, 1), title)
+    end
+
+    G.radius = DC.fancy_slider("##es_gun_r", u8("Радиус"), G.radius, 1, 100, px, row(0), full, rh - 3)
+    DC.trec("gun_r")
+    DC.tip("gun_radius", u8("Кому выдавать: игрокам в этом радиусе."))
+
+    G.ammo = DC.fancy_slider("##es_gun_a", u8("Патроны"), G.ammo, 1, 500, px, row(1), full, rh - 3)
+    DC.trec("gun_a")
+    DC.tip("gun_ammo", u8("Сколько патронов выдать."))
+
+    DC.gun_field(px, row(2), full, rh)
+    DC.trec("gun_field")
+
+    local cd = os.clock() < (DC.hp_cd_until or 0)
+    local L = DC.gun_last
+    local li = L and DC.gun_index(L.id)
+    local last_off = (li == nil) or cd
+    local last_label
+    if li then
+        last_label = espl_truncate_to_width(u8("Прошлый: ") .. G.labels[li], full - 44)
+    else
+        last_label = u8("Прошлый: -")
+    end
+    imgui.SetCursorPos(imgui.ImVec2(px, row(3)))
+    local last_clicked = DC.cbtn("es_gun_last", last_label, imgui.ImVec2(full, rh), "reload", hexcol(ESPL_AMBER), false, nil, last_off)
+    DC.trec("gun_last")
+    if li then
+        DC.tip("gun_last", u8("Повторить прошлую выдачу оружия."))
+    else
+        DC.tip("gun_last", u8("Пока нет прошлой выдачи."))
+    end
+    if last_clicked and not last_off then
+        DC.gun_give(L.radius, L.id, L.ammo)
+    end
+
+    local off = (G.sel == nil) or cd
+    imgui.SetCursorPos(imgui.ImVec2(px, row(4)))
+    local clicked = DC.cbtn("es_gun_give", u8("Выдать"), imgui.ImVec2(full, rh), nil, hexcol(GREEN_BRIGHT), true, nil, off)
+    DC.trec("gun_give")
+    DC.tip("gun_give", u8("Выдать выбранное оружие игрокам рядом."))
+    if clicked and not off then
+        DC.gun_give(G.radius, DC.GUNS[G.sel][1], G.ammo)
+    end
+
+    DC.gun_popup(full)
+end
+
+DC.TIP_DELAY = 2.0
+DC.tip_hov   = nil
+DC.tip_id    = nil
+DC.tip_t     = 0
+DC.tip_last  = 0
+
+function DC.tip(id, text, hovered)
+    if not DC.cursor_unlocked then return end
+    if hovered == nil then hovered = imgui.IsItemHovered() end
+    if hovered then DC.tip_hov = { id = id, text = text } end
+end
+
+function DC.tip_render()
+    local h = DC.tip_hov
+    DC.tip_hov = nil
+    if not h then DC.tip_id = nil return end
+
+    local now = os.clock()
+    if DC.tip_id ~= h.id or now - DC.tip_last > 0.3 then
+        DC.tip_id = h.id
+        DC.tip_t  = now
+    end
+    DC.tip_last = now
+    if now - DC.tip_t < DC.TIP_DELAY then return end
+
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 1.5)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(10, 8))
+    imgui.PushStyleColor(imgui.Col.PopupBg, DC.tc(0.05, 0.08, 0.05, 0.98))
+    imgui.PushStyleColor(imgui.Col.Border, hexcol(GREEN_MID))
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
+    imgui.BeginTooltip()
+    imgui.PushTextWrapPos(imgui.GetFontSize() * 18)
+    imgui.Text(h.text)
+    imgui.PopTextWrapPos()
+    imgui.EndTooltip()
+    imgui.PopStyleColor(3)
+    imgui.PopStyleVar(3)
+end
+
+function DC.ext_anim_impl(px, full, y0, y1)
+    local dl = imgui.GetWindowDrawList()
+    local wp = imgui.GetWindowPos()
+    local t  = os.clock()
+    local h  = y1 - y0
+    local cy = wp.y + y0 + h / 2
+    local x0 = wp.x + px
+
+    dl:PushClipRect(imgui.ImVec2(x0, wp.y + y0), imgui.ImVec2(x0 + full, wp.y + y1), true)
+
+    local step = 7
+    local n = math.floor(full / step)
+    local ox = (full - (n - 1) * step) / 2
+    for i = 0, n - 1 do
+        local u  = i / (n - 1)
+        local w  = 0.5 + 0.5 * math.sin(t * 2.6 - i * 0.45)
+        w = 0.65 * w + 0.35 * (0.5 + 0.5 * math.sin(t * 1.4 + i * 0.22))
+        local env = math.sin(u * math.pi) ^ 0.6
+        local bh  = 3 + (h - 6) * w * env
+        local a   = 0.25 + 0.65 * w * env
+        local x   = x0 + ox + i * step
+        dl:AddRectFilled(imgui.ImVec2(x - 1.5, cy - bh / 2), imgui.ImVec2(x + 1.5, cy + bh / 2),
+            DC.u32(hexcol(GREEN_BRIGHT, a)), 1.5)
+    end
+
+    dl:PopClipRect()
+end
+
+function DC.ext_anim(...)
+    local ok, err = pcall(DC.ext_anim_impl, ...)
+    if not ok and not DC.ea_err then
+        DC.ea_err = true
+        DC.trace("ext_anim ERROR: " .. tostring(err))
+    end
+end
 
 DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function()
     local remaining = 0
@@ -5538,19 +7357,48 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
     local io = imgui.GetIO()
     local WIN_W = DC.TP_WIN_W
 
-    if DC.tp_pos then
+    if DC.tut.active then
+        local e  = DC.tut_move()
+        local bx, by = DC.tp_base(io)
+        local th = (DC.tp_last_size and DC.tp_last_size.y) or 260
+        local cx = (io.DisplaySize.x - DC.TP_WIN_W) / 2
+        local cy = (io.DisplaySize.y - th) / 2
+        imgui.SetNextWindowPos(
+            imgui.ImVec2(math.floor(bx + (cx - bx) * e + 0.5), math.floor(by + (cy - by) * e + 0.5)),
+            imgui.Cond.Always)
+    elseif DC.tp_repos then
+        DC.tp_repos = false
+        local bx, by = DC.tp_base(io)
+        imgui.SetNextWindowPos(imgui.ImVec2(bx, by), imgui.Cond.Always)
+    elseif DC.tp_pos then
         imgui.SetNextWindowPos(imgui.ImVec2(DC.tp_pos.x, DC.tp_pos.y), imgui.Cond.Once)
     else
         imgui.SetNextWindowPos(
             imgui.ImVec2(io.DisplaySize.x * 0.17, io.DisplaySize.y * 0.70),
             imgui.Cond.Once)
     end
-    imgui.SetNextWindowSize(imgui.ImVec2(WIN_W, 0), imgui.Cond.Always)
+    local EXT = DC.tp_ext
+    do
+        local dt = math.min(io.DeltaTime, 0.1)
+        if EXT.open then EXT.p = math.min(EXT.p + dt / 0.22, 1)
+        else EXT.p = math.max(EXT.p - dt / 0.22, 0) end
+    end
+    if not EXT.open and EXT.p <= 0 then EXT.view = "main" end
+    local ext_e = 1 - (1 - EXT.p) ^ 3
+    imgui.SetNextWindowSize(imgui.ImVec2(WIN_W + math.floor(DC.TP_EXT_W * ext_e + 0.5), 0), imgui.Cond.Always)
 
     imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 14)
     imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 2.0)
     imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
     imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(24, 14))
+    local tut_alpha_pushed = false
+    if DC.tut.active and DC.tut.fade_win then
+        local ta = math.max(DC.tut_gf(), 0.02)
+        if pcall(imgui.PushStyleVarFloat, imgui.StyleVar.Alpha, ta) then
+            tut_alpha_pushed = true
+            DC.cur_alpha = ta
+        end
+    end
     imgui.PushStyleColor(imgui.Col.WindowBg, DC.tc(0.055, 0.075, 0.055, 0.95))
     imgui.PushStyleColor(imgui.Col.Border, hexcol(GREEN_MID))
     imgui.PushStyleColor(imgui.Col.Button, hexcol(GREEN_DARK))
@@ -5560,19 +7408,21 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
     local flags = imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize +
         imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse +
         imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoFocusOnAppearing + imgui.WindowFlags.NoNav
-    if not DC.cursor_unlocked then
+    if not DC.cursor_unlocked or DC.tut.active then
         flags = flags + imgui.WindowFlags.NoInputs
     end
 
     if DC.alert_anim.visible then imgui.SetNextWindowFocus() end
     imgui.Begin('##es_tp_timer', nil, flags)
+    DC.deco(0)
 
     do
         local wp = imgui.GetWindowPos()
         DC.tp_last_pos = { x = wp.x, y = wp.y }
         local tws = imgui.GetWindowSize()
-        DC.tp_last_size = { x = tws.x, y = tws.y }
-        if not DC.tp_pos and not DC.tp_default then
+        DC.tp_last_size = { x = WIN_W, y = tws.y }
+        DC.tp_full_w = tws.x
+        if not DC.tp_pos and not DC.tp_default and not DC.tut.active then
             DC.tp_default = { x = wp.x, y = wp.y }
         end
         if DC.cursor_unlocked and not imgui.IsMouseDown(0) then
@@ -5583,6 +7433,9 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
     local label_color = DC.tc(0.65, 0.75, 0.65, 1)
     local white       = imgui.ImVec4(1, 1, 1, 1)
 
+    local hdr_y = imgui.GetCursorPosY()
+    DC.row_y = DC.row_y or {}
+    DC.row_y.hdr = hdr_y
     if toast_font then imgui.PushFont(toast_font) end
     do
         local head = u8("Телепорт:")
@@ -5594,23 +7447,94 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
         end
         local g = 8
         local isz = imgui.GetTextLineHeight()
-        local hg_key = (remaining == 0) and "hourglass_red" or "hourglass_green"
-        local has_icon = DC.icon_get(hg_key) ~= nil
+        local hg_key = "hourglass_green"
+        local has_icon = remaining > 0 and DC.icon_get(hg_key) ~= nil
+        local has_r = remaining == 0 and DC.emenu.saved_idx ~= nil
         local total_w = imgui.CalcTextSize(head).x + g + imgui.CalcTextSize(val).x
             + (has_icon and (isz + g / 2) or 0)
-        imgui.SetCursorPosX(math.floor((WIN_W - total_w) / 2 + 0.5))
+            + (has_r and (isz + g / 2) or 0)
+        local sq     = isz
+        local has_d  = remaining > 0
+        local d_gap  = g / 2
+        if has_d then total_w = total_w + sq + d_gap end
+        local x = math.floor((WIN_W - total_w) / 2 + 0.5)
+        DC.trset("timer", x - 6, hdr_y - 3, x + total_w + 6, hdr_y + isz + 3)
+        if has_d then
+            imgui.SetCursorPos(imgui.ImVec2(x, hdr_y))
+            imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0, 0, 0, 0))
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(1, 1, 1, 0.12))
+            imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(1, 1, 1, 0.22))
+            if imgui.Button("##es_emenu_btn", imgui.ImVec2(sq, sq)) then
+                DC.emenu_start()
+            end
+            DC.trec("stop")
+            DC.tip("emenu_d", u8("Остановить телепорт"))
+            imgui.PopStyleColor(3)
+            local bmin, bmax = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+            local d_tex = DC.icon_get("close_square")
+            local dl = imgui.GetWindowDrawList()
+            if d_tex then
+                DC.icon_put("close_square", bmin.x, bmin.y, bmax.x - bmin.x, bmax.y - bmin.y,
+                    imgui.ColorConvertFloat4ToU32(label_color))
+            else
+                local tw = imgui.CalcTextSize(u8("Д"))
+                dl:AddText(imgui.ImVec2((bmin.x + bmax.x - tw.x) / 2, (bmin.y + bmax.y - tw.y) / 2),
+                    0xFFFFFFFF, u8("Д"))
+            end
+            x = x + sq + d_gap
+        end
+        imgui.SetCursorPos(imgui.ImVec2(x, hdr_y))
         imgui.TextColored(label_color, head)
         imgui.SameLine(0, g)
         imgui.TextColored(val_color, val)
         if has_icon then
             imgui.SameLine(0, g / 2)
-            DC.icon_draw(hg_key, isz)
+            DC.hg_draw(hg_key, isz, DC.u32(val_color))
+        end
+        if has_r then
+            imgui.SameLine(0, g / 2)
+            imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0, 0, 0, 0))
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(1, 1, 1, 0.12))
+            imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(1, 1, 1, 0.22))
+            if imgui.Button("##es_emenu_reload", imgui.ImVec2(isz, isz)) then
+                DC.emenu_start()
+            end
+            DC.tip("emenu_reload", u8("Запустить телепорт повторно"))
+            imgui.PopStyleColor(3)
+            local rmin, rmax = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+            local r_tex = DC.icon_get("reload")
+            local rdl = imgui.GetWindowDrawList()
+            if r_tex then
+                DC.icon_put("reload", rmin.x, rmin.y, rmax.x - rmin.x, rmax.y - rmin.y,
+                    imgui.ColorConvertFloat4ToU32(val_color))
+            else
+                local tw = imgui.CalcTextSize("R")
+                rdl:AddText(imgui.ImVec2((rmin.x + rmax.x - tw.x) / 2, (rmin.y + rmax.y - tw.y) / 2),
+                    0xFFFFFFFF, "R")
+            end
         end
     end
     if toast_font then imgui.PopFont() end
 
     imgui.Spacing()
-    imgui.Separator()
+    do
+        local T  = DC.tp_timer
+        local nt = os.time()
+        local oc = os.clock()
+        if DC.bar_last_t ~= nt then DC.bar_last_t = nt; DC.bar_tick = oc end
+        local sub   = math.min(math.max(oc - (DC.bar_tick or oc), 0), 1)
+        local rem_f = remaining > 0 and math.max(remaining - sub, 0) or 0
+        local target = T.total > 0 and math.min(rem_f / T.total, 1) or 0
+        if DC.bar_key ~= T.opened_at or DC.bar_val == nil then
+            DC.bar_key = T.opened_at
+            DC.bar_val = target
+        end
+        local dt = math.min(imgui.GetIO().DeltaTime, 0.1)
+        DC.bar_val = DC.bar_val + (target - DC.bar_val) * math.min(dt * 10, 1)
+        if target <= 0 and (remaining <= 0 or DC.bar_val < 0.004) then DC.bar_val = 0 end
+        DC.progress(DC.bar_val, 6, WIN_W - 48)
+        DC.trec("bar")
+    end
     imgui.Spacing()
 
     local function stat_row(label, value, icon)
@@ -5620,13 +7544,15 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
         local has_icon = icon ~= nil and DC.icon_get(icon) ~= nil
         local total_w = imgui.CalcTextSize(l).x + gap + imgui.CalcTextSize(value).x
             + (has_icon and (isz + gap / 2) or 0)
-        imgui.SetCursorPosX(math.floor((WIN_W - total_w) / 2 + 0.5))
+        local sx0 = math.floor((WIN_W - total_w) / 2 + 0.5)
+        imgui.SetCursorPosX(sx0)
+        DC.trset("dur", sx0 - 6, imgui.GetCursorPosY() - 2, sx0 + total_w + 6, imgui.GetCursorPosY() + isz + 2)
         imgui.TextColored(label_color, l)
         imgui.SameLine(0, gap)
         imgui.TextColored(white, value)
         if has_icon then
             imgui.SameLine(0, gap / 2)
-            DC.icon_draw(icon, isz)
+            DC.icon_draw(icon, isz, DC.u32(white))
         end
     end
 
@@ -5646,7 +7572,9 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
         local total_w = imgui.CalcTextSize(l1).x + g + imgui.CalcTextSize(v1).x + sep
             + imgui.CalcTextSize(l2).x + g + imgui.CalcTextSize(v2).x
             + (has1 and (isz + ig) or 0) + (has2 and (isz + ig) or 0)
-        imgui.SetCursorPosX(math.floor((WIN_W - total_w) / 2 + 0.5))
+        local px0 = math.floor((WIN_W - total_w) / 2 + 0.5)
+        imgui.SetCursorPosX(px0)
+        DC.trset("people", px0 - 6, imgui.GetCursorPosY() - 2, px0 + total_w + 6, imgui.GetCursorPosY() + isz + 2)
         if has1 then
             DC.icon_draw("person", isz)
             imgui.SameLine(0, ig)
@@ -5665,11 +7593,17 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
     end
 
     if toast_font then imgui.PushFont(toast_font) end
-    stat_row("Длится:", DC.duration_format(lasts), "stopwatch")
+    stat_row("Длится:", DC.duration_format(lasts), "clock" .. (math.floor(os.clock()) % 12 + 1))
     if toast_font then imgui.PopFont() end
 
     imgui.Spacing()
-    imgui.Separator()
+    do
+        DC.row_y.sep = imgui.GetCursorPosY()
+        local sp = imgui.GetCursorScreenPos()
+        imgui.GetWindowDrawList():AddLine(imgui.ImVec2(sp.x, sp.y), imgui.ImVec2(sp.x + WIN_W - 48, sp.y),
+            DC.u32(hexcol(GREEN_MID, 0.30)), 1)
+        imgui.Dummy(imgui.ImVec2(WIN_W - 48, 1))
+    end
     imgui.Spacing()
 
     local gap    = 8
@@ -5677,45 +7611,66 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
     local btn_h  = 30
     local grid_x = (WIN_W - (btn_w * 2 + gap)) / 2
 
-    imgui.SetCursorPosX(grid_x)
-    if imgui.Button("HpAll", imgui.ImVec2(btn_w, btn_h)) then
-        DC.send_cmd("/hpall 100")
-    end
-    imgui.SameLine(0, gap)
-    if imgui.Button("ArmorAll", imgui.ImVec2(btn_w, btn_h)) then
-        DC.send_cmd("/armourall 100")
-    end
+    DC.HP_CD = 1
+    local hp_on_cd = os.clock() < (DC.hp_cd_until or 0)
+    local C_RED    = imgui.ImVec4(0.92, 0.30, 0.30, 1)
+    local C_BLUE   = imgui.ImVec4(0.30, 0.62, 0.92, 1)
+    local C_CYAN   = imgui.ImVec4(0.35, 0.80, 0.95, 1)
+    local C_ORANGE = imgui.ImVec4(0.95, 0.55, 0.20, 1)
 
-    local now_clock = os.clock()
-    local cd_left   = DC.freeze_cd_until - now_clock
+    DC.row_y.hp = imgui.GetCursorPosY()
+    imgui.SetCursorPosX(grid_x)
+    if DC.cbtn("es_hpall", "HpAll", imgui.ImVec2(btn_w, btn_h), "heart", C_RED, true, nil, hp_on_cd) and not hp_on_cd then
+        DC.send_cmd("/hpall 100")
+        DC.hp_cd_until = os.clock() + DC.HP_CD
+    end
+    DC.trec("hp")
+    DC.tip("hpall", u8("Выдать всем здоровье."))
+    imgui.SameLine(0, gap)
+    if DC.cbtn("es_armorall", "ArmorAll", imgui.ImVec2(btn_w, btn_h), "shield", C_BLUE, true, nil, hp_on_cd) and not hp_on_cd then
+        DC.send_cmd("/armourall 100")
+        DC.hp_cd_until = os.clock() + DC.HP_CD
+    end
+    DC.trec("armor")
+    DC.tip("armorall", u8("Выдать всем броню."))
+
+    local cd_left   = DC.freeze_cd_until - os.clock()
     local on_cd     = cd_left > 0
     local cd_suffix = on_cd and string.format(" (%d)", math.ceil(cd_left)) or ""
 
-    if on_cd then
-        local dim = DC.tc(0.18, 0.22, 0.18, 1)
-        imgui.PushStyleColor(imgui.Col.Button, dim)
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, dim)
-        imgui.PushStyleColor(imgui.Col.ButtonActive, dim)
-        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 0.45))
-    end
-
+    DC.row_y.fr = imgui.GetCursorPosY()
     imgui.SetCursorPosX(grid_x)
-    if imgui.Button("Freez" .. cd_suffix .. "##es_freez", imgui.ImVec2(btn_w, btn_h)) and not on_cd then
+    if DC.cbtn("es_freez", "Freez" .. cd_suffix, imgui.ImVec2(btn_w, btn_h), "snowflake", C_CYAN, true, nil, on_cd) and not on_cd then
         DC.send_cmd("/freezeall 100")
         DC.freeze_cd_until = os.clock() + DC.FREEZE_CD
     end
+    DC.trec("freez")
+    DC.tip("freez", u8("Заморозить всех игроков рядом."))
     imgui.SameLine(0, gap)
-    if imgui.Button("UnFreez" .. cd_suffix .. "##es_unfreez", imgui.ImVec2(btn_w, btn_h)) and not on_cd then
+    if DC.cbtn("es_unfreez", "UnFreez" .. cd_suffix, imgui.ImVec2(btn_w, btn_h), "flame", C_ORANGE, true, nil, on_cd) and not on_cd then
         DC.send_cmd("/unfreezeall 100")
         DC.freeze_cd_until = os.clock() + DC.FREEZE_CD
     end
-
-    if on_cd then imgui.PopStyleColor(4) end
+    DC.trec("unfreez")
+    DC.tip("unfreez", u8("Разморозить всех игроков рядом."))
 
     imgui.SetCursorPosX(grid_x)
-    if imgui.Button(u8("Победитель") .. "##es_winner_btn", imgui.ImVec2(btn_w * 2 + gap, btn_h)) then
+    DC.row_y.win = imgui.GetCursorPosY()
+    local arrow_w = 30
+    if DC.cbtn("es_winner_btn", u8("Победитель"), imgui.ImVec2(btn_w * 2 + gap - arrow_w - gap, btn_h), "trophy", hexcol(GREEN_BRIGHT), true) then
         DC.winner_show()
     end
+    DC.trec("winner")
+    DC.tip("winner", u8("Объявить победителя и выдать ему награду."))
+
+    imgui.SameLine(0, gap)
+    local arrow_icon = EXT.open and "caret_left" or "caret_right"
+    if DC.cbtn("es_ext_arrow", DC.icon_get(arrow_icon) and "" or (EXT.open and "<" or ">"), imgui.ImVec2(arrow_w, btn_h),
+            arrow_icon, imgui.ImVec4(1, 1, 1, 1), false, DC.tc(0.65, 0.75, 0.65, 1)) then
+        EXT.open = not EXT.open
+    end
+    DC.trec("arrow")
+    DC.tip("ext_arrow", u8(EXT.open and "Свернуть дополнительные кнопки." or "Открыть дополнительные кнопки."))
 
     imgui.Spacing()
 
@@ -5727,9 +7682,10 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
     else
         hint = u8("Нажми " .. DC.key_name() .. " чтобы разблокировать курсор")
     end
-    local hint2 = u8("(нажми на текст для смены клавиши)")
+    local hint2 = u8("Наведись на кнопку для информации")
     local hint_color = imgui.ImVec4(1, 1, 1, 0.4)
 
+    DC.row_y.hint = imgui.GetCursorPosY()
     imgui.SetCursorPosX((WIN_W - imgui.CalcTextSize(hint).x) / 2)
     imgui.TextColored(hint_color, hint)
     local h1_min, h1_max = imgui.GetItemRectMin(), imgui.GetItemRectMax()
@@ -5739,27 +7695,824 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
     imgui.SetCursorPosX((WIN_W - imgui.CalcTextSize(hint2).x) / 2)
     imgui.TextColored(hint_color, hint2)
     local h2_min, h2_max = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+    do
+        local twp = imgui.GetWindowPos()
+        DC.trset("hint", math.min(h1_min.x, h2_min.x) - twp.x - 6, h1_min.y - twp.y - 2,
+            math.max(h1_max.x, h2_max.x) - twp.x + 6, h2_max.y - twp.y + 2)
+    end
 
-    local area_min = imgui.ImVec2(math.min(h1_min.x, h2_min.x), h1_min.y)
-    local area_max = imgui.ImVec2(math.max(h1_max.x, h2_max.x), h2_max.y)
-
-    if DC.cursor_unlocked and imgui.IsWindowHovered() and imgui.IsMouseHoveringRect(area_min, area_max) then
+    if DC.cursor_unlocked and imgui.IsWindowHovered() and imgui.IsMouseHoveringRect(h1_min, h1_max) then
         imgui.SetMouseCursor(imgui.MouseCursor.Hand)
         local dl  = imgui.GetWindowDrawList()
         local col = imgui.ColorConvertFloat4ToU32(imgui.ImVec4(1, 1, 1, 0.5))
         dl:AddLine(imgui.ImVec2(h1_min.x, h1_max.y), imgui.ImVec2(h1_max.x, h1_max.y), col, 1.0)
-        dl:AddLine(imgui.ImVec2(h2_min.x, h2_max.y), imgui.ImVec2(h2_max.x, h2_max.y), col, 1.0)
+        DC.tip("hint", u8("Нажми сюда, затем на любую клавишу, чтобы выбрать другую кнопку курсора."), true)
         if imgui.IsMouseClicked(0) and not DC.rebinding then
             DC.rebinding = true
         end
+    end
+
+    if EXT.p > 0.02 then
+        local H    = (DC.tp_last_size and DC.tp_last_size.y) or 260
+        local padv = 14
+        local cols = DC.TP_EXT_COLS
+        local n    = DC.TP_EXT_ROWS
+        local g    = 8
+        local px   = WIN_W
+        local pw   = DC.TP_EXT_COLW
+        local full = cols * pw + (cols - 1) * DC.TP_EXT_GAP
+        local bh   = math.floor((H - padv * 2 - g * (n - 1)) / n)
+        local top  = padv
+        local wp0  = imgui.GetWindowPos()
+        local dx   = wp0.x + WIN_W - 12
+        imgui.GetWindowDrawList():AddLine(
+            imgui.ImVec2(dx, wp0.y + top),
+            imgui.ImVec2(dx, wp0.y + H - padv),
+            DC.u32(hexcol(GREEN_MID, 0.30)), 1)
+
+        if EXT.view == "guns" then
+            DC.ext_guns(px, top, full, H, padv)
+        else
+        local R   = DC.row_y or {}
+        local BH  = 30
+        local gap = DC.TP_EXT_GAP
+        local half = math.floor((full - gap) / 2)
+        local muted = DC.tc(0.65, 0.75, 0.65, 1)
+        local cd = os.clock() < (DC.hp_cd_until or 0)
+
+        local function fit_text(y, text, color, font)
+            if font then imgui.PushFont(font) end
+            local tw = imgui.CalcTextSize(text).x
+            local k  = math.min(1, (full - 4) / math.max(tw, 1))
+            if k < 1 then pcall(imgui.SetWindowFontScale, k) tw = tw * k end
+            imgui.SetCursorPos(imgui.ImVec2(px + math.floor((full - tw) / 2 + 0.5), y))
+            imgui.TextColored(color, text)
+            if k < 1 then pcall(imgui.SetWindowFontScale, 1.0) end
+            if font then imgui.PopFont() end
+        end
+
+        local function ext_btn(id, x, y, w, h, label, tip, cmd, icon, c)
+            imgui.SetCursorPos(imgui.ImVec2(x, y))
+            local off = (cd and cmd) and true or false
+            local clicked = DC.cbtn("es_ext_btn" .. id, u8(label), imgui.ImVec2(w, h), icon, c, true, nil, off)
+            if tip then DC.tip("ext" .. id, u8(tip)) end
+            if clicked and cmd and not cd then
+                DC.send_cmd(cmd)
+                DC.hp_cd_until = os.clock() + DC.HP_CD
+            end
+            return clicked
+        end
+
+        fit_text(R.hdr or top, u8("Дополнительно"), muted, toast_font)
+
+        if R.sep and R.hdr then
+            if toast_font then imgui.PushFont(toast_font) end
+            local hl = imgui.GetTextLineHeight()
+            if toast_font then imgui.PopFont() end
+            local ay0, ay1 = R.hdr + hl + 8, R.sep - 8
+            if ay1 - ay0 >= 30 then DC.ext_anim(px, full, ay0, ay1) end
+        end
+
+        if R.sep then
+            local sp = imgui.GetWindowPos()
+            imgui.GetWindowDrawList():AddLine(
+                imgui.ImVec2(sp.x + px, sp.y + R.sep), imgui.ImVec2(sp.x + px + full, sp.y + R.sep),
+                DC.u32(hexcol(GREEN_MID, 0.30)), 1)
+        end
+
+        ext_btn(11, px, R.hp or top, half, BH, "UnArmorAll", "Снять броню со всех.", "/unarmourall 100", "shield_off", imgui.ImVec4(0.30, 0.62, 0.92, 1))
+        DC.trec("unarmor")
+        ext_btn(12, px + half + gap, R.hp or top, half, BH, "UnWeapAll", "Забрать оружие у всех.", "/weapall 100", nil, imgui.ImVec4(0.95, 0.55, 0.20, 1))
+        DC.trec("unweap")
+
+        if ext_btn(50, px, R.fr or (top + BH + 8), full, BH, "Выдача оружия", "Выдать игрокам оружие.", nil, nil, hexcol(GREEN_BRIGHT)) then
+            EXT.view = "guns"
+            DC.gun_reset_values()
+        end
+        DC.trec("guns")
+
+        do
+            local m = DC.anti_mode
+            local label = u8("Анти пополнение: " .. DC.ANTI_NAMES[m])
+            local c, filled
+            if m == 1 then c, filled = imgui.ImVec4(1, 1, 1, 1), false
+            elseif m == 2 then c, filled = hexcol(GREEN_BRIGHT), true
+            else c, filled = hexcol(ESPL_AMBER), true end
+            local tw = imgui.CalcTextSize(label).x
+            local k = math.min(1, (full - 12) / math.max(tw, 1))
+            if k < 1 then pcall(imgui.SetWindowFontScale, k) end
+            imgui.SetCursorPos(imgui.ImVec2(px, R.win or (top + 2 * (BH + 8))))
+            if DC.cbtn("es_ext_btn60", label, imgui.ImVec2(full, BH), nil, c, filled, m == 1 and muted or nil) then
+                DC.anti_cycle()
+            end
+            DC.trec("anti")
+            if k < 1 then pcall(imgui.SetWindowFontScale, 1.0) end
+            DC.tip("ext60", u8("Что делать с игроком, который сам пополнил здоровье или броню: ничего, наказать сразу или предупредить. Нажми, чтобы сменить."))
+        end
+
+        do
+            local hc = imgui.ImVec4(1, 1, 1, 0.4)
+            local hy = R.hint or (top + 3 * (BH + 8))
+            fit_text(hy, u8("Анти пополнение:"), hc)
+            fit_text(hy + imgui.GetTextLineHeight() - 3, u8("нажми, чтобы сменить режим"), hc)
+        end
+        end
+    end
+
+    pcall(DC.tut_spot_draw, WIN_W)
+
+    if not DC.cursor_unlocked and not DC.tut.active then
+        EXT.open = false
     end
 
     imgui.End()
 
     imgui.PopStyleColor(5)
     imgui.PopStyleVar(4)
+
+    if tut_alpha_pushed then imgui.PopStyleVar(1) end
+    DC.cur_alpha = 1
+
+    DC.tip_render()
 end)
 DC.tp_frame.HideCursor = true
+DC.TUT_STEP_TIME = 10
+DC.TUT_MIN_TIME  = 2
+
+DC.tut   = { active = false, idx = 0, t0 = 0, rc = nil, dim = 0, plin = 0, saved = nil,
+             closing = false, t_in = 0, close_t = 0, hide = false, fade_win = false }
+DC.TUT_IN  = 0.45
+DC.TUT_OUT = 0.40
+DC.tp_repos = false
+
+DC.TUT_ASK_OPEN  = 0.30
+DC.TUT_ASK_CLOSE = 0.25
+DC.tut_ask = { open = false, closing = false, opened_at = 0, close_at = 0 }
+
+function DC.tut_gf()
+    local T, now = DC.tut, os.clock()
+    local gi = math.min(math.max((now - T.t_in) / DC.TUT_IN, 0), 1)
+    gi = 1 - (1 - gi) ^ 3
+    if T.closing then
+        local go = math.min(math.max((now - T.close_t) / DC.TUT_OUT, 0), 1)
+        return gi * (1 - go * go)
+    end
+    return gi
+end
+
+function DC.tut_move()
+    local T = DC.tut
+    if not T.active then return 0 end
+    local now = os.clock()
+    local gi = math.min(math.max((now - T.t_in) / DC.TUT_IN, 0), 1)
+    local e = 1 - (1 - gi) ^ 3
+    if T.closing then
+        local go = math.min(math.max((now - T.close_t) / DC.TUT_OUT, 0), 1)
+        e = e * (1 - go * go * (3 - 2 * go))
+    end
+    return e
+end
+
+function DC.tp_base(io)
+    if DC.tp_pos then return DC.tp_pos.x, DC.tp_pos.y end
+    if DC.tp_default then return DC.tp_default.x, DC.tp_default.y end
+    return io.DisplaySize.x * 0.17, io.DisplaySize.y * 0.70
+end
+DC.trect = {}
+
+function DC.trec(key)
+    local a, b, wp = imgui.GetItemRectMin(), imgui.GetItemRectMax(), imgui.GetWindowPos()
+    DC.trect[key] = { a.x - wp.x, a.y - wp.y, b.x - wp.x, b.y - wp.y }
+end
+
+function DC.trset(key, x0, y0, x1, y1)
+    DC.trect[key] = { x0, y0, x1, y1 }
+end
+
+DC.TUT_STEPS = {
+    { key = "win", dim = false, title = "Окно помощника",
+      text = "Панель ведущего мероприятия. Она открывается сама, когда ты запускаешь телепорт. Сейчас в ней демо-данные. Разберём каждый элемент." },
+    { key = "timer", title = "Таймер телепорта",
+      text = "Сколько времени осталось до конца телепорта." },
+    { key = "stop", title = "Остановить телепорт",
+      text = "Закрывает телепорт раньше времени. Когда время вышло, здесь появляется кнопка повторного запуска." },
+    { key = "bar", title = "Полоса времени",
+      text = "Наглядно показывает, сколько времени осталось." },
+    { key = "people", title = "Люди рядом",
+      text = "Слева: сколько игроков рядом с тобой сейчас. Справа: максимум за всё мероприятие." },
+    { key = "dur", title = "Длительность",
+      text = "Сколько времени идёт мероприятие." },
+    { key = "hp", title = "HpAll",
+      text = "Выдаёт здоровье всем игрокам рядом." },
+    { key = "armor", title = "ArmorAll",
+      text = "Выдаёт броню всем игрокам рядом." },
+    { key = "freez", title = "Freez",
+      text = "Замораживает всех игроков рядом." },
+    { key = "unfreez", title = "UnFreez",
+      text = "Размораживает всех игроков рядом." },
+    { key = "winner", title = "Победитель",
+      text = "Объявляет победителя, выдаёт ему награду и отправляет отчёт о мероприятии." },
+    { key = "arrow", title = "Доп. панель",
+      text = "Раскрывает дополнительные кнопки справа." },
+    { key = "unarmor", ext = true, title = "UnArmorAll",
+      text = "Снимает броню со всех игроков рядом." },
+    { key = "unweap", ext = true, title = "UnWeapAll",
+      text = "Забирает оружие у всех игроков рядом." },
+    { key = "guns", ext = true, title = "Выдача оружия",
+      text = "Открывает меню выдачи оружия. Заглянем внутрь." },
+    { keys = { "gun_r", "gun_a" }, ext = true, view = "guns", title = "Радиус и патроны",
+      text = "Кому выдавать оружие и сколько патронов. Двигай ползунки мышью." },
+    { key = "gun_field", ext = true, view = "guns", title = "Выбор оружия",
+      text = "Нажми на поле и найди нужное оружие по названию." },
+    { key = "gun_last", ext = true, view = "guns", title = "Прошлый",
+      text = "Повторяет прошлую выдачу оружия." },
+    { key = "gun_give", ext = true, view = "guns", title = "Выдать",
+      text = "Выдаёт выбранное оружие игрокам рядом." },
+    { key = "gun_back", ext = true, view = "guns", title = "Назад",
+      text = "Возвращает к остальным кнопкам." },
+    { key = "anti", ext = true, title = "Анти пополнение",
+      text = "Следит, не пополнил ли игрок здоровье или броню сам. Можно ничего не делать, наказывать сразу или показывать предупреждение." },
+    { key = "hint", title = "Курсор",
+      text = function()
+          return "Окно не мешает игре, пока курсор заблокирован. Нажми " .. DC.key_name() ..
+              ", чтобы пользоваться кнопками. Если навести на кнопку и подождать, появится подсказка."
+      end },
+    { key = "win", dim = false, title = "Это всё",
+      text = "Теперь ты знаешь все кнопки. Удачных мероприятий!" },
+}
+
+function DC.tut_done_exists()
+    return CFG.get("helper.tutorial_done", false) == true
+end
+
+function DC.tut_mark_done()
+    CFG.set("helper.tutorial_done", true)
+end
+
+function DC.tut_apply_step()
+    local T  = DC.tut
+    local st = DC.TUT_STEPS[T.idx]
+    if not st then return end
+    local EXT = DC.tp_ext
+    EXT.open = st.ext and true or false
+    if st.view == "guns" then
+        if EXT.view ~= "guns" then
+            EXT.view = "guns"
+            DC.gun_reset_values()
+        end
+    elseif EXT.view == "guns" then
+        EXT.view = "main"
+    end
+    DC.trace("tutorial step " .. T.idx .. " (" .. tostring(st.title) .. ")")
+end
+
+function DC.tut_start()
+    local T = DC.tut
+    if T.active then return end
+    DC.trace("tutorial start")
+    pcall(DC.tut_ask_close)
+    local tm = DC.tp_timer
+    T.saved = { visible = tm.visible, end_epoch = tm.end_epoch, total = tm.total, opened_at = tm.opened_at }
+
+    pcall(DC.winner_close)
+    pcall(DC.alert_clear)
+    pcall(DC.tp_set_cursor, false)
+    pcall(DC.scan_prompt_close)
+
+    T.fade_win = not tm.visible
+    if not tm.visible then DC.tp_set_visible(true) end
+    tm.total     = 900
+    tm.end_epoch = os.time() + 900
+
+    DC.tp_ext.open = false
+    DC.tp_ext.view = "main"
+    T.active  = true
+    T.closing = false
+    T.hide    = false
+    T.idx     = 1
+    T.t0      = os.clock()
+    T.t_in    = os.clock()
+    T.rc      = nil
+    T.dim     = 0
+    T.plin    = 0
+    DC.tut_apply_step()
+end
+
+function DC.tut_finish(hide, instant)
+    local T = DC.tut
+    if not T.active then return end
+    if instant then
+        DC.tut_finish_now(hide)
+        return
+    end
+    if T.closing then return end
+    DC.trace("tutorial closing at step " .. tostring(T.idx))
+    T.closing = true
+    T.close_t = os.clock()
+    T.hide    = hide and true or false
+    DC.tp_ext.open = false
+end
+
+function DC.tut_finish_now(hide)
+    local T = DC.tut
+    if not T.active then return end
+    DC.trace("tutorial finish at step " .. tostring(T.idx))
+    T.active  = false
+    T.closing = false
+    T.rc      = nil
+    DC.tp_ext.open = false
+    DC.tp_repos    = true
+    DC.tp_last_pos = nil
+    local sv = T.saved
+    T.saved = nil
+    if sv then
+        DC.tp_timer.total     = sv.total
+        DC.tp_timer.end_epoch = sv.end_epoch
+        DC.tp_timer.opened_at = sv.opened_at
+        if hide and not sv.visible then DC.tp_set_visible(false) end
+    end
+end
+
+function DC.tut_next()
+    local T = DC.tut
+    if not T.active or T.closing then return end
+    if T.idx >= #DC.TUT_STEPS then
+        DC.tut_mark_done()
+        DC.tut_finish(true)
+        es_msg("Обучение завершено!")
+        return
+    end
+    T.idx = T.idx + 1
+    T.t0  = os.clock()
+    DC.tut_apply_step()
+end
+
+function DC.tut_ask_show()
+    local A = DC.tut_ask
+    A.opened_at = os.clock()
+    A.closing   = false
+    A.open      = true
+end
+
+function DC.tut_ask_close()
+    local A = DC.tut_ask
+    if A.open and not A.closing then
+        A.closing  = true
+        A.close_at = os.clock()
+    end
+end
+
+function DC.tut_ask_accept()
+    local A = DC.tut_ask
+    DC.trace("tutorial ask: Enter pressed")
+    if not A.open or A.closing then return end
+    DC.tut_ask_close()
+    DC.tut_start()
+end
+
+function DC.tut_loop()
+    DC.spawn(function()
+        local chat_was = false
+        while true do
+            wait(0)
+            local T = DC.tut
+            local chat_now = sampIsChatInputActive()
+            if T.active then
+                if T.closing then
+                    if os.clock() - T.close_t >= DC.TUT_OUT then
+                        pcall(DC.tut_finish_now, T.hide)
+                    end
+                else
+                    local el = os.clock() - T.t0
+                    if el >= DC.TUT_STEP_TIME then
+                        pcall(DC.tut_next)
+                    elseif el >= DC.TUT_MIN_TIME then
+                        local blocked = chat_now or chat_was or sampIsDialogActive()
+                        if not blocked and wasKeyPressed(vkeys.VK_RETURN) then
+                            pcall(DC.tut_next)
+                        end
+                    end
+                end
+            end
+
+            local A = DC.tut_ask
+            if A.open and not A.closing then
+                if T.active then
+                    DC.tut_ask_close()
+                else
+                    local blocked = chat_now or chat_was or sampIsDialogActive()
+                        or DC.winner.open or DC.scan_prompt.open or DC.tp_timer.visible
+                    if not blocked and wasKeyPressed(vkeys.VK_RETURN) then
+                        pcall(DC.tut_ask_accept)
+                    end
+                end
+            end
+            chat_was = chat_now
+        end
+    end)
+end
+
+function DC.tut_auto_start()
+    if DC.tut_done_exists() then return end
+    DC.spawn(function()
+        if type(sampGetGamestate) == "function" then
+            local waited = 0
+            while waited < 120000 do
+                local ok, gs = pcall(sampGetGamestate)
+                if ok and gs == 3 then break end
+                wait(500)
+                waited = waited + 500
+            end
+        end
+        local waited = 0
+        while waited < 900000 do
+            local busy = (not DC.session_ready) or screens_path_open[0] or DC.tp_timer.visible
+                or DC.win_open[0] or sampIsDialogActive() or sampIsChatInputActive()
+            if not busy then break end
+            wait(500)
+            waited = waited + 500
+        end
+        if waited >= 900000 then return end
+        wait(3000)
+        if DC.tut.active or DC.tp_timer.visible then return end
+        es_msg("Вы не прошли обучение. Для начала нажмите {FFFF00}Enter{FFFFFF}.")
+        DC.tut_ask_show()
+    end)
+end
+
+function DC.tut_dim_draw(dl, wp, ws, rc, alpha)
+    local I  = 3
+    local wr = 14 - I
+    local L, TP = wp.x + I, wp.y + I
+    local R, B  = wp.x + ws.x - I, wp.y + ws.y - I
+
+    local hx0 = math.max(math.floor(wp.x + rc[1] + 0.5), L)
+    local hy0 = math.max(math.floor(wp.y + rc[2] + 0.5), TP)
+    local hx1 = math.min(math.floor(wp.x + rc[3] + 0.5), R)
+    local hy1 = math.min(math.floor(wp.y + rc[4] + 0.5), B)
+    if hx1 <= hx0 or hy1 <= hy0 then return end
+
+    local col = DC.u32(imgui.ImVec4(0, 0, 0, 0.60 * alpha))
+
+    local function band(x0, y0, x1, y1)
+        if x1 <= x0 or y1 <= y0 then return end
+        dl:PushClipRect(imgui.ImVec2(x0, y0), imgui.ImVec2(x1, y1), false)
+        dl:AddRectFilled(imgui.ImVec2(L, TP), imgui.ImVec2(R, B), col, wr)
+        dl:PopClipRect()
+    end
+    band(L - 3, TP - 3, R + 3, hy0)
+    band(L - 3, hy1,    R + 3, B + 3)
+    band(L - 3, hy0,    hx0,   hy1)
+    band(hx1,   hy0,    R + 3, hy1)
+
+    local rr = math.min(8, (hx1 - hx0) / 2, (hy1 - hy0) / 2)
+    local function corner(px, py, sx, sy)
+        local cx, cy = px + sx * rr, py + sy * rr
+        dl:PathClear()
+        dl:PathLineTo(imgui.ImVec2(px, py))
+        for i = 0, 6 do
+            local a = (math.pi / 2) * i / 6
+            dl:PathLineTo(imgui.ImVec2(cx - sx * rr * math.cos(a), cy - sy * rr * math.sin(a)))
+        end
+        dl:PathFillConvex(col)
+    end
+    corner(hx0, hy0,  1,  1)
+    corner(hx1, hy0, -1,  1)
+    corner(hx1, hy1, -1, -1)
+    corner(hx0, hy1,  1, -1)
+end
+
+function DC.tut_spot_draw(WIN_W)
+    local T = DC.tut
+    if not T.active then return end
+    local st = DC.TUT_STEPS[T.idx]
+    if not st then return end
+    local wp, ws = imgui.GetWindowPos(), imgui.GetWindowSize()
+    local dt = math.min(imgui.GetIO().DeltaTime, 0.1)
+    local dl = imgui.GetWindowDrawList()
+    local k = T.fade_win and 1 or DC.tut_gf()
+
+    local tgt
+    if st.key == "win" then
+        tgt = { 7, 7, WIN_W - 7, ws.y - 7 }
+    else
+        local x0, y0, x1, y1
+        for _, key in ipairs(st.keys or { st.key }) do
+            local r = DC.trect[key]
+            if r then
+                x0 = x0 and math.min(x0, r[1]) or r[1]
+                y0 = y0 and math.min(y0, r[2]) or r[2]
+                x1 = x1 and math.max(x1, r[3]) or r[3]
+                y1 = y1 and math.max(y1, r[4]) or r[4]
+            end
+        end
+        if x0 then tgt = { x0 - 4, y0 - 3, x1 + 4, y1 + 3 } end
+    end
+    if tgt then
+        if not T.rc then
+            T.rc = { tgt[1], tgt[2], tgt[3], tgt[4] }
+        else
+            local kk = math.min(dt * 12, 1)
+            for i = 1, 4 do T.rc[i] = T.rc[i] + (tgt[i] - T.rc[i]) * kk end
+        end
+    end
+    local rc = T.rc
+    if not rc then return end
+
+    local want = (st.dim == false) and 0 or 1
+    T.dim = T.dim + (want - T.dim) * math.min(dt * 8, 1)
+
+    if T.dim * k > 0.01 then
+        local ok, err = pcall(DC.tut_dim_draw, dl, wp, ws, rc, T.dim * k)
+        if not ok and not DC.dim_err then
+            DC.dim_err = true
+            DC.trace("tut_dim_draw ERROR: " .. tostring(err))
+        end
+    end
+
+    local pulse = 0.5 + 0.5 * math.sin(os.clock() * 4)
+    local p1 = imgui.ImVec2(math.floor(wp.x + rc[1] + 0.5), math.floor(wp.y + rc[2] + 0.5))
+    local p2 = imgui.ImVec2(math.floor(wp.x + rc[3] + 0.5), math.floor(wp.y + rc[4] + 0.5))
+    dl:AddRect(p1, p2, DC.u32(hexcol(GREEN_BRIGHT, (0.65 + 0.35 * pulse) * k)), 8, 15, 2)
+    local e = 2 + 3 * pulse
+    dl:AddRect(imgui.ImVec2(p1.x - e, p1.y - e), imgui.ImVec2(p2.x + e, p2.y + e),
+        DC.u32(hexcol(GREEN_BRIGHT, 0.28 * (1 - pulse) * k)), 10, 15, 1.5)
+end
+
+DC.tut_frame = imgui.OnFrame(function() return DC.tut.active end, function()
+    local T  = DC.tut
+    local st = DC.TUT_STEPS[T.idx]
+    local tp, ts = DC.tp_last_pos, DC.tp_last_size
+    if not st or not tp or not ts then return end
+
+    if not st.t8 then
+        st.t8 = u8(st.title)
+        if type(st.text) == "string" then st.x8 = u8(st.text) end
+    end
+    local body = st.x8 or u8(st.text())
+
+    local io = imgui.GetIO()
+    local W, PAD = 380, 18
+    local total  = #DC.TUT_STEPS
+    local gf     = DC.tut_gf()
+    local slide  = (1 - math.min(gf, 1)) * 18
+    local fade   = DC.alpha_push("tut" .. T.idx, 0.30, gf)
+
+    local x = tp.x + (DC.tp_full_w or ts.x) / 2 - (W + PAD * 2) / 2
+    x = math.max(8, math.min(x, io.DisplaySize.x - (W + PAD * 2) - 8))
+    if tp.y >= 240 then
+        imgui.SetNextWindowPos(imgui.ImVec2(x, tp.y - 12 + slide), imgui.Cond.Always, imgui.ImVec2(0, 1))
+    else
+        imgui.SetNextWindowPos(imgui.ImVec2(x, tp.y + ts.y + 12 + slide), imgui.Cond.Always, imgui.ImVec2(0, 0))
+    end
+
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 14)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 2.0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(PAD, 14))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 8))
+    imgui.PushStyleColor(imgui.Col.WindowBg, DC.tc(0.055, 0.075, 0.055, 0.97))
+    imgui.PushStyleColor(imgui.Col.Border, hexcol(GREEN_MID))
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
+
+    imgui.Begin('##es_tut_card', nil,
+        imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoMove +
+        imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse + imgui.WindowFlags.NoSavedSettings +
+        imgui.WindowFlags.NoFocusOnAppearing + imgui.WindowFlags.NoNav +
+        imgui.WindowFlags.AlwaysAutoResize)
+    DC.deco(0)
+
+    local muted = DC.tc(0.65, 0.75, 0.65, 1)
+    local y0 = imgui.GetCursorPosY()
+    if toast_font then imgui.PushFont(toast_font) end
+    local hh = imgui.GetTextLineHeight()
+    imgui.TextColored(hexcol(GREEN_BRIGHT), st.t8)
+    if toast_font then imgui.PopFont() end
+    local cnt = string.format("%d/%d", T.idx, total)
+    local cw  = imgui.CalcTextSize(cnt).x
+    imgui.SameLine(PAD + W - cw)
+    imgui.SetCursorPosY(y0 + (hh - imgui.GetTextLineHeight()) / 2 + 1)
+    imgui.TextColored(muted, cnt)
+    imgui.SetCursorPosY(y0 + hh + 6)
+
+    imgui.PushStyleColor(imgui.Col.Separator, hexcol(GREEN_MID, 0.35))
+    imgui.Separator()
+    imgui.PopStyleColor(1)
+
+    imgui.PushTextWrapPos(PAD + W)
+    imgui.TextColored(imgui.ImVec4(1, 1, 1, 0.92), body)
+    imgui.PopTextWrapPos()
+
+    imgui.Spacing()
+    local frac = 1 - (os.clock() - T.t0) / DC.TUT_STEP_TIME
+    DC.progress(math.max(0, math.min(1, frac)), 4, W)
+    imgui.Spacing()
+
+    imgui.End()
+
+    imgui.PopStyleColor(3)
+    imgui.PopStyleVar(4)
+    DC.alpha_pop(fade)
+end)
+DC.tut_frame.HideCursor = true
+DC.tut_frame.LockPlayer = true
+
+DC.TUT_DIM_ALPHA = 0.85
+DC.tut_dim_frame = imgui.OnFrame(function() return DC.tut.active end, function()
+    local gf = DC.tut_gf()
+    if gf <= 0.01 then return end
+    local io  = imgui.GetIO()
+    local a   = DC.TUT_DIM_ALPHA * gf
+
+    if not DC.tut_dim_win then
+        local ok = pcall(function()
+            local col = imgui.ColorConvertFloat4ToU32(imgui.ImVec4(0, 0, 0, a))
+            imgui.GetBackgroundDrawList():AddRectFilled(imgui.ImVec2(0, 0), io.DisplaySize, col)
+        end)
+        if ok then return end
+        DC.tut_dim_win = true
+        DC.trace("tut dim: background draw list unavailable, using fullscreen window")
+    end
+
+    imgui.SetNextWindowPos(imgui.ImVec2(0, 0), imgui.Cond.Always)
+    imgui.SetNextWindowSize(io.DisplaySize, imgui.Cond.Always)
+    imgui.SetNextWindowBgAlpha(a)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 0)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 0)
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0, 0, 0, 1))
+    imgui.Begin('##es_tut_dim', nil,
+        imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoMove +
+        imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoInputs +
+        imgui.WindowFlags.NoNav + imgui.WindowFlags.NoFocusOnAppearing + imgui.WindowFlags.NoBringToFrontOnFocus)
+    imgui.End()
+    imgui.PopStyleColor(1)
+    imgui.PopStyleVar(2)
+end)
+DC.tut_dim_frame.HideCursor = true
+
+DC.tut_prompt_frame = imgui.OnFrame(function() return DC.tut.active or DC.tut.plin > 0.001 end, function()
+    local T  = DC.tut
+    local dt = math.min(imgui.GetIO().DeltaTime, 0.1)
+    local el = os.clock() - T.t0
+    local want = (T.active and not T.closing and el >= DC.TUT_MIN_TIME) and 1 or 0
+    if want == 1 then T.plin = math.min(T.plin + dt / 0.30, 1)
+    else T.plin = math.max(T.plin - dt / 0.25, 0) end
+    local p = (want == 1) and (1 - (1 - T.plin) ^ 3) or (T.plin ^ 3)
+    if p <= 0.001 then return end
+
+    local last = T.idx >= #DC.TUT_STEPS
+    local left = math.max(0, math.ceil(DC.TUT_STEP_TIME - el))
+    local part1 = u8(last and "Завершить: " or "Следующий элемент: ")
+    local part2 = "Enter"
+    local part3 = " (" .. left .. ")"
+
+    local using_font = toast_font ~= nil
+    if using_font then imgui.PushFont(toast_font) end
+    local w1 = imgui.CalcTextSize(part1).x
+    local w2 = imgui.CalcTextSize(part2).x
+    local w3 = imgui.CalcTextSize(part3).x
+    local max_w = w1 + w2 + imgui.CalcTextSize(" (" .. DC.TUT_STEP_TIME .. ")").x
+    local line_h = imgui.GetTextLineHeight()
+    if using_font then imgui.PopFont() end
+
+    local ic_w = DC.enter_w(line_h)
+    local win_w = max_w + ic_w + TOAST_PAD * 2 + 24
+    local win_h = 40
+    local io = imgui.GetIO()
+    local screen_w, screen_h = io.DisplaySize.x, io.DisplaySize.y
+    local pos_y = screen_h - win_h - 8 + 30 * (1 - p)
+    local alpha = 0.97 * p
+
+    imgui.SetNextWindowPos(imgui.ImVec2(screen_w / 2, pos_y), imgui.Cond.Always, imgui.ImVec2(0.5, 0))
+    imgui.SetNextWindowSize(imgui.ImVec2(win_w, win_h), imgui.Cond.Always)
+    imgui.SetNextWindowBgAlpha(alpha)
+
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 18)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 2.0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(10, 8))
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
+    local bc = hexcol(GREEN_MID)
+    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(bc.x, bc.y, bc.z, p))
+
+    imgui.Begin('##es_tut_prompt', nil,
+        imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoMove +
+        imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoSavedSettings +
+        imgui.WindowFlags.NoFocusOnAppearing + imgui.WindowFlags.NoInputs + imgui.WindowFlags.NoNav)
+
+    local dl  = imgui.GetWindowDrawList()
+    local wp  = imgui.GetWindowPos()
+    local wsz = imgui.GetWindowSize()
+    local gap = 3
+    dl:AddRectFilled(
+        imgui.ImVec2(wp.x + gap, wp.y + gap),
+        imgui.ImVec2(wp.x + wsz.x - gap, wp.y + wsz.y - gap),
+        imgui.ColorConvertFloat4ToU32(DC.tc(0.06, 0.09, 0.06, alpha)), 15)
+
+    if using_font then imgui.PushFont(toast_font) end
+    imgui.SetCursorPosY((wsz.y - line_h) / 2)
+    imgui.SetCursorPosX(math.floor((wsz.x - (w1 + ic_w + w2 + w3)) / 2 + 0.5))
+    local g = hexcol(GREEN_BRIGHT)
+    imgui.TextColored(imgui.ImVec4(1, 1, 1, p), part1)
+    imgui.SameLine(0, 0)
+    if ic_w > 0 then
+        DC.icon_draw("enter", ic_w - 4, imgui.ColorConvertFloat4ToU32(imgui.ImVec4(g.x, g.y, g.z, p)))
+        imgui.SameLine(0, 4)
+    end
+    imgui.TextColored(imgui.ImVec4(g.x, g.y, g.z, p), part2)
+    imgui.SameLine(0, 0)
+    imgui.TextColored(imgui.ImVec4(1, 1, 1, 0.6 * p), part3)
+    if using_font then imgui.PopFont() end
+
+    imgui.End()
+
+    imgui.PopStyleColor(2)
+    imgui.PopStyleVar(3)
+end)
+DC.tut_prompt_frame.HideCursor = true
+
+DC.tut_ask_frame = imgui.OnFrame(function() return DC.tut_ask.open and (DC.tut_ask.closing or not DC.tp_timer.visible) end, function()
+    local A   = DC.tut_ask
+    local now = os.clock()
+
+    local p
+    if A.closing then
+        local t = math.min((now - A.close_at) / DC.TUT_ASK_CLOSE, 1.0)
+        if t >= 1.0 then
+            A.open    = false
+            A.closing = false
+            return
+        end
+        p = (1.0 - t) ^ 3
+    else
+        local t = math.min((now - A.opened_at) / DC.TUT_ASK_OPEN, 1.0)
+        p = 1 - (1 - t) ^ 3
+    end
+
+    local part1 = u8("Вы не прошли обучение, для начала нажмите: ")
+    local part2 = "Enter"
+
+    local using_font = toast_font ~= nil
+    if using_font then imgui.PushFont(toast_font) end
+    local w1 = imgui.CalcTextSize(part1).x
+    local w2 = imgui.CalcTextSize(part2).x
+    local w3 = 0
+    local max_w = w1 + w2
+    local line_h = imgui.GetTextLineHeight()
+    if using_font then imgui.PopFont() end
+
+    local ic_w = DC.enter_w(line_h)
+    local win_w = max_w + ic_w + TOAST_PAD * 2 + 24
+    local win_h = 40
+    local io = imgui.GetIO()
+    local screen_w, screen_h = io.DisplaySize.x, io.DisplaySize.y
+
+    local pos_y = screen_h - win_h - 8 + 30 * (1 - p)
+    local alpha = 0.97 * p
+
+    imgui.SetNextWindowPos(imgui.ImVec2(screen_w / 2, pos_y), imgui.Cond.Always, imgui.ImVec2(0.5, 0))
+    imgui.SetNextWindowSize(imgui.ImVec2(win_w, win_h), imgui.Cond.Always)
+    imgui.SetNextWindowBgAlpha(alpha)
+
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 18)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 2.0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(10, 8))
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
+    local bc = hexcol(GREEN_MID)
+    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(bc.x, bc.y, bc.z, p))
+
+    imgui.Begin('##es_tut_ask', nil,
+        imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoMove +
+        imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoSavedSettings +
+        imgui.WindowFlags.NoFocusOnAppearing + imgui.WindowFlags.NoInputs + imgui.WindowFlags.NoNav)
+
+    local dl  = imgui.GetWindowDrawList()
+    local wp  = imgui.GetWindowPos()
+    local wsz = imgui.GetWindowSize()
+    local gap = 3
+    dl:AddRectFilled(
+        imgui.ImVec2(wp.x + gap, wp.y + gap),
+        imgui.ImVec2(wp.x + wsz.x - gap, wp.y + wsz.y - gap),
+        imgui.ColorConvertFloat4ToU32(DC.tc(0.06, 0.09, 0.06, alpha)), 15)
+
+    if using_font then imgui.PushFont(toast_font) end
+    imgui.SetCursorPosY((wsz.y - line_h) / 2)
+    imgui.SetCursorPosX(math.floor((wsz.x - (w1 + ic_w + w2 + w3)) / 2 + 0.5))
+    local g = hexcol(GREEN_BRIGHT)
+    imgui.TextColored(imgui.ImVec4(1, 1, 1, p), part1)
+    imgui.SameLine(0, 0)
+    if ic_w > 0 then
+        DC.icon_draw("enter", ic_w - 4, imgui.ColorConvertFloat4ToU32(imgui.ImVec4(g.x, g.y, g.z, p)))
+        imgui.SameLine(0, 4)
+    end
+    imgui.TextColored(imgui.ImVec4(g.x, g.y, g.z, p), part2)
+    if using_font then imgui.PopFont() end
+
+    imgui.End()
+
+    imgui.PopStyleColor(2)
+    imgui.PopStyleVar(3)
+end)
+DC.tut_ask_frame.HideCursor = true
+
 DC.ALERT_TTL   = 15
 DC.ALERT_MAX   = 3
 DC.ALERT_OVERLAP = 10
@@ -5905,7 +8658,7 @@ end, function()
 
         local left = math.max(0, math.ceil(DC.ALERT_TTL - (now - a.t)))
         local kick_label = u8("Выгнать") .. " (" .. left .. ")"
-        if imgui.Button(kick_label .. "##es_kick_" .. a.name, imgui.ImVec2(avail, 30)) then
+        if DC.cbtn("es_kick_" .. a.name, kick_label, imgui.ImVec2(avail, 30), "door_exit", imgui.ImVec4(0.92, 0.30, 0.30, 1), true) then
             DC.alert_kick(a)
         end
 
@@ -6029,20 +8782,27 @@ end
 DC.winner_frame = imgui.OnFrame(function()
     return DC.winner.open and DC.tp_timer.visible
 end, function()
+    local es_fade = DC.alpha_push("winner", 0.15)
     local w = DC.winner
 
-    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
-    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
+    local acc   = hexcol(GREEN_BRIGHT)
+    local function A(a) return imgui.ImVec4(acc.x, acc.y, acc.z, a) end
+    local muted = DC.tc(0.65, 0.75, 0.65, 1)
+    local white = imgui.ImVec4(1, 1, 1, 1)
+    local W = 320
+
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 12)
     imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 2.0)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(14, 12))
-    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 6))
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 8)
+    imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 1.0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(20, 16))
+    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 10))
     imgui.PushStyleColor(imgui.Col.WindowBg, DC.tc(0.05, 0.08, 0.05, 0.98))
-    imgui.PushStyleColor(imgui.Col.Border, hexcol(GREEN_MID))
-    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
-    imgui.PushStyleColor(imgui.Col.Button, hexcol(GREEN_DARK))
-    imgui.PushStyleColor(imgui.Col.ButtonHovered, hexcol(GREEN_MID))
-    imgui.PushStyleColor(imgui.Col.ButtonActive, hexcol(GREEN_BRIGHT))
-    imgui.PushStyleColor(imgui.Col.FrameBg, DC.tc(0.10, 0.14, 0.10, 1))
+    imgui.PushStyleColor(imgui.Col.Border, A(1))
+    imgui.PushStyleColor(imgui.Col.Text, white)
+    imgui.PushStyleColor(imgui.Col.FrameBg, DC.tc(0.09, 0.13, 0.09, 1))
+    imgui.PushStyleColor(imgui.Col.FrameBgHovered, DC.tc(0.12, 0.18, 0.12, 1))
+    imgui.PushStyleColor(imgui.Col.FrameBgActive, DC.tc(0.14, 0.22, 0.14, 1))
 
     local io = imgui.GetIO()
     imgui.SetNextWindowPos(
@@ -6054,70 +8814,122 @@ end, function()
         imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize +
         imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoTitleBar +
         imgui.WindowFlags.AlwaysAutoResize)
+    DC.deco(0, acc)
 
-    local label_color = DC.tc(0.65, 0.75, 0.65, 1)
-    local dim_color   = imgui.ImVec4(1, 1, 1, 0.35)
+    local x0  = imgui.GetCursorPosX()
+    local lh  = imgui.GetTextLineHeight()
+    local isz = math.floor(lh)
 
-    local lbl_title = u8("Название")
-    local lbl_id    = u8("ID")
-    local label_w = math.max(
-        imgui.CalcTextSize(lbl_title).x,
-        imgui.CalcTextSize(lbl_id).x) + 10
-    local input_w = 230
-    local total_w = label_w + input_w
-    local x0 = imgui.GetCursorPosX()
-
-    local function row_label(text)
-        imgui.AlignTextToFramePadding()
-        imgui.TextColored(label_color, text)
-        imgui.SameLine(x0 + label_w)
+    local function chip_w(icon, text)
+        return 20 + imgui.CalcTextSize(text).x + (DC.icon_get(icon) and (isz + 6) or 0)
+    end
+    local function chip(icon, text)
+        local cw, ch = chip_w(icon, text), lh + 10
+        local p  = imgui.GetCursorScreenPos()
+        imgui.Dummy(imgui.ImVec2(cw, ch))
+        local dl = imgui.GetWindowDrawList()
+        local p2 = imgui.ImVec2(p.x + cw, p.y + ch)
+        dl:AddRectFilled(p, p2, DC.u32(A(0.16)), ch / 2)
+        dl:AddRect(p, p2, DC.u32(A(0.55)), ch / 2, 15, 1)
+        local x = p.x + 10
+        if DC.icon_get(icon) then
+            DC.icon_put(icon, x, p.y + (ch - isz) / 2, isz, isz, DC.u32(A(1)))
+            x = x + isz + 6
+        end
+        dl:AddText(imgui.ImVec2(x, p.y + 5), DC.u32(white), text)
     end
 
-    row_label(lbl_title)
+    local function notice(icon, text, col)
+        text = espl_truncate_to_width(text, W - isz - 8)
+        local has = DC.icon_get(icon) ~= nil
+        local total = imgui.CalcTextSize(text).x + (has and (isz + 5) or 0)
+        imgui.SetCursorPosX(x0 + math.max((W - total) / 2, 0))
+        if has then
+            DC.icon_draw(icon, isz, DC.u32(col))
+            imgui.SameLine(0, 5)
+        end
+        imgui.TextColored(col, text)
+    end
+
+    local function field(id, buf, width, icon, hint, flags)
+        imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(34, 8))
+        imgui.PushStyleColor(imgui.Col.Border, A(0.55))
+        imgui.PushItemWidth(width)
+        local entered = imgui.InputText(id, buf, ffi.sizeof(buf), flags or 0)
+        imgui.PopItemWidth()
+        imgui.PopStyleColor(1)
+        imgui.PopStyleVar(1)
+        local smin, smax = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+        DC.icon_put(icon, smin.x + 11, smin.y + (smax.y - smin.y - isz) / 2, isz, isz, DC.u32(A(0.9)))
+        if ffi.string(buf) == "" then
+            imgui.GetWindowDrawList():AddText(imgui.ImVec2(smin.x + 34, smin.y + 8),
+                DC.u32(imgui.ImVec4(1, 1, 1, 0.35)), hint)
+        end
+        return entered, smin, smax
+    end
+
+    do
+        local t1, t2 = u8("Победитель"), DC.WINNER_SUM .. u8("КК")
+        local gap_c = 8
+        imgui.SetCursorPosX(x0 + math.max((W - (chip_w("trophy", t1) + gap_c + chip_w("coin", t2))) / 2, 0))
+        chip("trophy", t1)
+        imgui.SameLine(0, gap_c)
+        chip("coin", t2)
+    end
+
+    imgui.PushStyleColor(imgui.Col.Separator, A(0.35))
+    imgui.Separator()
+    imgui.PopStyleColor(1)
+
+    local submit = false
+
     if w.focus then
         imgui.SetKeyboardFocusHere()
         w.focus = false
     end
-    imgui.PushItemWidth(input_w)
-    imgui.InputText('##es_win_title', w.title_buf, ffi.sizeof(w.title_buf))
-    imgui.PopItemWidth()
+    if field('##es_win_title', w.title_buf, W, "modal_title", u8("Название мероприятия"),
+            imgui.InputTextFlags.EnterReturnsTrue) then
+        submit = true
+    end
 
-    row_label(lbl_id)
-    imgui.PushItemWidth(70)
-    imgui.InputText('##es_win_id', w.id_buf, ffi.sizeof(w.id_buf),
-        imgui.InputTextFlags.CharsDecimal)
-    imgui.PopItemWidth()
-    imgui.SameLine(0, 8)
+    local id_w = math.floor(34 + imgui.CalcTextSize(u8("ID игрока")).x + 11 + 0.5)
+    if field('##es_win_id', w.id_buf, id_w, "person", u8("ID игрока"),
+            imgui.InputTextFlags.CharsDecimal + imgui.InputTextFlags.EnterReturnsTrue) then
+        submit = true
+    end
+    imgui.SameLine(0, 10)
     imgui.AlignTextToFramePadding()
     do
         local pid = tonumber(ffi.string(w.id_buf))
         if pid and pid >= 0 and pid <= 1003 and pid == math.floor(pid) and sampIsPlayerConnected(pid) then
-            local nick_max = input_w - 70 - 8
             imgui.TextColored(hexcol(GREEN_BRIGHT),
-                espl_truncate_to_width(sampGetPlayerNickname(pid), nick_max))
+                espl_truncate_to_width(sampGetPlayerNickname(pid), W - id_w - 10))
         else
-            imgui.TextColored(dim_color, "-")
+            imgui.TextColored(imgui.ImVec4(1, 1, 1, 0.35), "-")
         end
     end
 
     if w.error ~= "" then
-        center_text(w.error, imgui.ImVec4(1, 0.35, 0.35, 1))
+        notice("modal_alert", w.error, imgui.ImVec4(1, 0.35, 0.35, 1))
     end
 
     local gap   = 8
-    local btn_w = (total_w - gap) / 2
-    if imgui.Button(u8("Отправить"), imgui.ImVec2(btn_w, 28)) then
-        DC.winner_submit()
+    local btn_w = (W - gap) / 2
+    if DC.cbtn("es_win_send", u8("Отправить"), imgui.ImVec2(btn_w, 34), "check", hexcol(GREEN_BRIGHT), true) then
+        submit = true
     end
     imgui.SameLine(0, gap)
-    if imgui.Button(u8("Отмена"), imgui.ImVec2(btn_w, 28)) then
+    if DC.cbtn("es_win_cancel", u8("Отмена"), imgui.ImVec2(btn_w, 34), "modal_cancel", white, false, muted) then
         w.open = false
     end
 
+    if submit then DC.winner_submit() end
+
     imgui.End()
 
-    imgui.PopStyleColor(7)
-    imgui.PopStyleVar(5)
+    imgui.PopStyleColor(6)
+    imgui.PopStyleVar(6)
+    DC.alpha_pop(es_fade)
 end)
 
 DC.BANK_MENU_CMD      = "/abankmenu"
@@ -6136,8 +8948,9 @@ function DC.bank_set(state)
     DC.bank.deadline = os.clock() + DC.BANK_STEP_TIMEOUT
 end
 
-function DC.bank_reset()
-    DC.trace('bank_reset')
+function DC.bank_reset(failed)
+    DC.trace('bank_reset failed=' .. tostring(failed))
+    local was = DC.bank.state
     DC.bank.state   = "idle"
     DC.bank.menu_id = nil
 end
@@ -6161,7 +8974,7 @@ function DC.bank_start(nick, amount, title)
             wait(250)
             if DC.bank.run == my_run and DC.bank.state ~= "idle" and os.clock() > DC.bank.deadline then
                 es_msg("Банк: нет ответа от сервера, операция прервана (шаг: " .. DC.bank.state .. ")", "FF4444")
-                DC.bank_reset()
+                DC.bank_reset(true)
             end
         end
     end)
@@ -6223,7 +9036,158 @@ function DC.bank_send(id, button, item, text)
     end)
 end
 
+DC.EMENU_CMD         = "/eventmenu"
+DC.EMENU_KEYWORD     = "(запущено)"
+DC.EMENU_TIMEOUT     = 8
+DC.EMENU_PROBE_DELAY = 1000
+
+DC.emenu = { state = "idle", run = 0, deadline = 0, saved_idx = nil, probe_seq = 0 }
+
+function DC.emenu_reset()
+    DC.trace('emenu_reset')
+    DC.emenu.state = "idle"
+end
+
+function DC.emenu_begin(mode)
+    local em = DC.emenu
+    if em.state ~= "idle" and os.clock() < em.deadline then return false end
+    if DC.bank and DC.bank.state ~= "idle" then return false end
+
+    em.run      = em.run + 1
+    em.state    = (mode == "probe") and "probe" or "menu1"
+    em.deadline = os.clock() + DC.EMENU_TIMEOUT
+    DC.trace('emenu_begin mode=' .. tostring(mode))
+
+    local my_run = em.run
+    DC.spawn(function()
+        while DC.emenu.run == my_run and DC.emenu.state ~= "idle" do
+            wait(250)
+            if DC.emenu.run == my_run and DC.emenu.state ~= "idle"
+               and os.clock() > DC.emenu.deadline then
+                if DC.emenu.state == "probe" then
+                    es_msg("Меню мероприятий: не удалось определить пункт (запущено) - нет ответа сервера.", "FF4444")
+                else
+                    es_msg("Меню мероприятий: нет ответа от сервера, операция прервана.", "FF4444")
+                end
+                DC.emenu_reset()
+            end
+        end
+    end)
+
+    DC.spawn(function()
+        wait(0)
+        DC.say(DC.EMENU_CMD)
+    end)
+    return true
+end
+
+function DC.emenu_start()
+    return DC.emenu_begin("run")
+end
+
+function DC.emenu_probe_schedule()
+    local em = DC.emenu
+    em.saved_idx = nil
+    em.probe_seq = em.probe_seq + 1
+    local my_seq = em.probe_seq
+    DC.trace('emenu_probe_schedule seq=' .. my_seq)
+    DC.spawn(function()
+        wait(DC.EMENU_PROBE_DELAY)
+        local tries = 0
+        while DC.emenu.probe_seq == my_seq and tries < 40 do
+            if DC.emenu_begin("probe") then return end
+            wait(250)
+            tries = tries + 1
+        end
+    end)
+end
+
+function DC.emenu_items(style, text)
+    local lines = {}
+    for line in (tostring(text) .. "\n"):gmatch("([^\n]*)\n") do
+        lines[#lines + 1] = (line:gsub("\r", ""))
+    end
+    while #lines > 0 and lines[#lines]:gsub("%s+", "") == "" do
+        table.remove(lines)
+    end
+    if style == 5 then table.remove(lines, 1) end
+    return lines
+end
+
+function DC.emenu_find(items)
+    for i, line in ipairs(items) do
+        if DC.has_text(line, DC.EMENU_KEYWORD) then return i - 1 end
+    end
+    return nil
+end
+
+function DC.emenu_on_dialog(id, style, title, button1, button2, text)
+    local em = DC.emenu
+    if not DC.bank_is_list(style) then
+        DC.trace("emenu: unexpected dialog style=" .. tostring(style) .. " state=" .. em.state)
+        if em.state == "probe" then
+            es_msg("Меню мероприятий: не удалось найти пункт (запущено), кнопка недоступна.", "FF4444")
+        else
+            es_msg("Меню мероприятий: неожиданный диалог, операция прервана.", "FFAA00")
+        end
+        DC.emenu_reset()
+        return false
+    end
+
+    local items = DC.emenu_items(style, text)
+
+    if em.state == "probe" then
+        local idx = DC.emenu_find(items)
+        if idx then
+            em.saved_idx = idx
+            DC.trace("emenu: probe saved_idx=" .. idx .. " of " .. #items)
+        else
+            em.saved_idx = nil
+            DC.trace("emenu: probe keyword not found among " .. #items .. " items")
+            es_msg("Меню мероприятий: не удалось найти пункт {FFFF00}(запущено){FFFFFF}, кнопка повтора недоступна.", "FF4444")
+        end
+        DC.emenu_reset()
+        DC.bank_send(id, 0, 65535, "")
+        return true
+
+    elseif em.state == "menu1" then
+        local idx = em.saved_idx or DC.emenu_find(items)
+        if not idx or idx >= #items then
+            DC.trace("emenu: menu1 item not found, items=" .. #items)
+            es_msg("Меню мероприятий: пункт {FFFF00}(запущено){FFFFFF} не найден.", "FF4444")
+            DC.emenu_reset()
+            DC.bank_send(id, 0, 65535, "")
+            return true
+        end
+        DC.trace("emenu: menu1 item=" .. idx)
+        em.state    = "menu2"
+        em.deadline = os.clock() + DC.EMENU_TIMEOUT
+        DC.bank_send(id, 1, idx, "")
+        return true
+
+    elseif em.state == "menu2" then
+        if #items < 2 then
+            es_msg("Меню мероприятий: во втором окне меньше двух пунктов.", "FFAA00")
+            DC.emenu_reset()
+            DC.bank_send(id, 0, 65535, "")
+            return true
+        end
+        local idx = #items - 2
+        DC.trace("emenu: menu2 item=" .. idx .. " of " .. #items)
+        DC.emenu_reset()
+        DC.bank_send(id, 1, idx, "")
+        return true
+    end
+
+    DC.emenu_reset()
+    return false
+end
+
 function DC.sampev_onShowDialog(id, style, title, button1, button2, text)
+    if DC.emenu.state ~= "idle" then
+        if DC.emenu_on_dialog(id, style, title, button1, button2, text) then return false end
+        return
+    end
     DC.trace('onShowDialog id=' .. tostring(id) .. ' style=' .. tostring(style) .. ' title=' .. tostring(title):sub(1, 60) .. ' bank=' .. tostring(DC.bank.state))
     local b  = DC.bank
     local st = b.state
@@ -6294,7 +9258,7 @@ function DC.sampev_onShowDialog(id, style, title, button1, button2, text)
         end
     end
 
-    DC.bank_reset()
+    DC.bank_reset(true)
     es_msg(string.format("Банк: неожиданный диалог (шаг {FFFF00}%s{FFFFFF}, style {FFFF00}%s{FFFFFF}, id {FFFF00}%s{FFFFFF}). Операция прервана.",
         tostring(st), tostring(style), tostring(id)), "FFAA00")
 end
@@ -6423,7 +9387,8 @@ DC.scan_prompt_frame = imgui.OnFrame(function() return DC.scan_prompt.open end, 
     local line_h = imgui.GetTextLineHeight()
     if using_font then imgui.PopFont() end
 
-    local win_w = max_w + TOAST_PAD * 2 + 24
+    local ic_w = DC.enter_w(line_h)
+    local win_w = max_w + ic_w + TOAST_PAD * 2 + 24
     local win_h = 40
     local io = imgui.GetIO()
     local screen_w, screen_h = io.DisplaySize.x, io.DisplaySize.y
@@ -6460,11 +9425,15 @@ DC.scan_prompt_frame = imgui.OnFrame(function() return DC.scan_prompt.open end, 
     if using_font then imgui.PushFont(toast_font) end
 
     imgui.SetCursorPosY((wsz.y - line_h) / 2)
-    imgui.SetCursorPosX(math.floor((wsz.x - (w1 + w2 + w3)) / 2 + 0.5))
+    imgui.SetCursorPosX(math.floor((wsz.x - (w1 + ic_w + w2 + w3)) / 2 + 0.5))
 
     local g = hexcol(GREEN_BRIGHT)
     imgui.TextColored(imgui.ImVec4(1, 1, 1, p), part1)
     imgui.SameLine(0, 0)
+    if ic_w > 0 then
+        DC.icon_draw("enter", ic_w - 4, imgui.ColorConvertFloat4ToU32(imgui.ImVec4(g.x, g.y, g.z, p)))
+        imgui.SameLine(0, 4)
+    end
     imgui.TextColored(imgui.ImVec4(g.x, g.y, g.z, p), part2)
     imgui.SameLine(0, 0)
     imgui.TextColored(imgui.ImVec4(1, 1, 1, 0.6 * p), part3)
@@ -6498,7 +9467,9 @@ function DC.offline_write(list)
     f:write(dkjson.encode(list, { indent = true }))
     f:close()
     os.remove(DC.OFFLINE_FILE)
-    return os.rename(tmp, DC.OFFLINE_FILE) and true or false
+    local ok = os.rename(tmp, DC.OFFLINE_FILE) and true or false
+    if ok then DC.offline_count = #list end
+    return ok
 end
 
 function DC.offline_save(payload)
@@ -6625,43 +9596,79 @@ function DC.send_report(payload, on_done)
     end)
 end
 
-function DC.offline_flush()
+function DC.offline_flush(manual)
+    if DC.offline_busy then return end
+    DC.offline_busy = true
     DC.spawn(function()
-        wait(5000)
-        local waited = 0
-        while not get_hwid() and waited < 60000 do
-            wait(500)
-            waited = waited + 500
-        end
-        if not get_hwid() then return end
+        local ok, err = pcall(DC.offline_flush_body, manual)
+        DC.offline_busy = false
+        if not ok then DC.print("[EventScan] Ошибка отправки отложенных отчётов: " .. tostring(err)) end
+    end)
+end
 
-        local list = DC.offline_load()
-        if #list == 0 then return end
+function DC.offline_flush_body(manual)
+    if not manual then wait(5000) end
+    local waited = 0
+    while not get_hwid() and waited < 60000 do
+        wait(500)
+        waited = waited + 500
+    end
+    if not get_hwid() then return end
+
+    local list = DC.offline_load()
+    DC.offline_count = #list
+    if #list == 0 then
+        if manual then es_msg("Очередь отчётов пуста, отправлять нечего.", "FFAA00") end
+        return
+    end
+
+    if manual then
+        show_ess_toast(u8("Отправка..."), GREEN_BRIGHT)
+    else
         DC.print(string.format("[EventScan] В локальной очереди отчётов: %d. Пробую отправить...", #list))
+    end
 
-        local sent = 0
-        for _, entry in ipairs(list) do
-            if type(entry.payload) ~= "table" or type(entry.payload.scans) ~= "table" then
+    local sent, last_err, denied = 0, nil, false
+    for _, entry in ipairs(list) do
+        if type(entry.payload) ~= "table" or type(entry.payload.scans) ~= "table" then
+            DC.offline_remove(entry.id)
+        else
+            local result = DC.deliver(entry.payload)
+            if result and result.ok then
                 DC.offline_remove(entry.id)
+                sent = sent + 1
             else
-                local result = DC.deliver(entry.payload)
-                if result and result.ok then
-                    DC.offline_remove(entry.id)
-                    sent = sent + 1
-                else
-                    entry.tries = (entry.tries or 0) + 1
-                    DC.offline_update(entry)
-                    local err = result and result.err or "timeout"
-                    DC.print("[EventScan] Отложенный отчёт не отправлен: " .. tostring(err))
-                    if is_hwid_error(err) or is_network_failure(result) then break end
-                end
+                entry.tries = (entry.tries or 0) + 1
+                DC.offline_update(entry)
+                local err = result and result.err or "timeout"
+                last_err = err
+                DC.print("[EventScan] Отложенный отчёт не отправлен: " .. tostring(err))
+                if is_hwid_error(err) then denied = true break end
+                if is_network_failure(result) then break end
             end
         end
+    end
 
-        if sent > 0 then
-            es_msg(string.format("Отправлено отложенных отчётов: {FFFF00}%d{FFFFFF}.", sent))
+
+    if manual then
+        local left = DC.offline_count or 0
+        if left == 0 then
+            show_ess_toast(u8("Готово!"), GREEN_BRIGHT)
+        else
+            show_ess_toast(u8("Не отправлено"), "FFAA00")
         end
-    end)
+        wait(2000)
+        hide_ess_toast()
+        if denied then
+            notify_hwid_denied()
+        elseif left == 0 then
+            es_msg(string.format("Отправлено отложенных отчётов: {FFFF00}%d{FFFFFF}.", sent))
+        else
+            es_msg("Не удалось отправить, в очереди осталось: {FFFF00}" .. left .. "{FFFFFF} (" .. tostring(last_err) .. ")", "FFAA00")
+        end
+    elseif sent > 0 then
+        es_msg(string.format("Отправлено отложенных отчётов: {FFFF00}%d{FFFFFF}.", sent))
+    end
 end
 
 DC.hp_cache    = {}
@@ -6717,7 +9724,16 @@ function DC.hp_flush_pending()
         local p = DC.hp_pending[i]
         if now - p.t >= DC.HP_WINDOW_AFTER then
             if not DC.give_in_window(p.t) then
-                DC.alert_push(p.name, p.hp, p.armor)
+                local m = DC.tut.active and 1 or DC.anti_mode
+                if m == 3 then
+                    DC.alert_push(p.name, p.hp, p.armor)
+                elseif m == 2 then
+                    local last = DC.anti_auto_t[p.name]
+                    if not last or os.clock() - last > 10 then
+                        DC.anti_auto_t[p.name] = os.clock()
+                        DC.alert_kick({ name = p.name, hp = p.hp, armor = p.armor })
+                    end
+                end
             end
             table.remove(DC.hp_pending, i)
         end
@@ -6828,6 +9844,7 @@ function DC.session_collect()
         players  = players,
         reports  = reports,
         scanning = scanning_active and true or false,
+        emenu_idx = DC.emenu and DC.emenu.saved_idx or nil,
         timer = {
             visible    = t.visible and true or false,
             end_epoch  = t.end_epoch,
@@ -6852,6 +9869,7 @@ function DC.session_clear_files()
 end
 
 function DC.session_save(force)
+    if DC.tut and DC.tut.active then return end
     local st = DC.session_collect()
 
     local empty = #st.scans == 0 and #st.players == 0 and #st.reports == 0
@@ -6957,6 +9975,11 @@ function DC.session_restore()
         DC.tp_save()
     end
 
+    if tonumber(d.emenu_idx) then
+        DC.emenu.saved_idx = tonumber(d.emenu_idx)
+        DC.trace('session restored: emenu_idx=' .. tostring(DC.emenu.saved_idx))
+    end
+
     DC.trace('session restored: scans=' .. #pending_scans .. ' players=' .. #unique_players_order .. ' reports=' .. #pending_reports)
     if d.scanning then start_detection_loop() end
 
@@ -6972,6 +9995,8 @@ function DC.session_reset()
     unique_players_order = {}
     DC.last_winner       = nil
     DC.tp_armed          = false
+    DC.emenu.saved_idx   = nil
+    DC.emenu.probe_seq   = DC.emenu.probe_seq + 1
     DC.tp_timer.end_epoch = 0
     DC.tp_timer.total     = 0
     DC.tp_timer.opened_at = 0
@@ -7010,6 +10035,187 @@ function DC.session_start()
             wait(1000)
             local ok2, err2 = pcall(DC.session_save)
             if not ok2 then DC.print("[EventScan] Ошибка сохранения сессии: " .. tostring(err2)) end
+        end
+    end)
+end
+
+
+function DC.utf8_cut(str, max_chars)
+    local out, n = {}, 0
+    for ch in tostring(str):gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+        n = n + 1
+        if n > max_chars then out[#out + 1] = "..." break end
+        out[#out + 1] = ch
+    end
+    return table.concat(out)
+end
+
+
+
+function DC.voice_legacy_cleanup()
+    for _, sub in ipairs({ "spik\\", "remind\\" }) do
+        local dir = DATA_DIR .. sub
+        local names = {}
+        for name in DC.dir_iter(dir) do
+            if name ~= "." and name ~= ".." then names[#names + 1] = name end
+        end
+        for _, n in ipairs(names) do os.remove(dir .. n) end
+        pcall(lfs.rmdir, dir)
+    end
+    if CFG.get("voice") ~= nil then CFG.set("voice", nil) end
+end
+
+function DC.remind_notify(s, left)
+    local minutes = math.max(1, math.ceil(left / 60))
+    DC.trace("remind: " .. s.date .. " " .. s.time .. " left=" .. left)
+    local title_ansi = s.title
+    local okd, dec = pcall(function() return u8:decode(s.title) end)
+    if okd and dec then title_ansi = dec end
+    es_msg(string.format("Через {FFFF00}%d мин{FFFFFF} твоё МП в {FFFF00}%s{FFFFFF}: %s", minutes, s.time, title_ansi))
+    DC.spawn(function()
+        show_ess_toast(u8("МП через " .. minutes .. " мин: ") .. DC.utf8_cut(s.title, 24), ESPL_AMBER)
+        wait(4500)
+        hide_ess_toast()
+    end)
+end
+
+
+
+DC.REM_BEFORE = { 3, 1 }
+
+function DC.rem_list()
+    local l = CFG.get("reminders")
+    if type(l) ~= "table" then
+        l = {}
+        CFG.set("reminders", l, true)
+    end
+    return l
+end
+
+function DC.rem_del(date, time, nosave)
+    local l = DC.rem_list()
+    local changed = false
+    for i = #l, 1, -1 do
+        if l[i].date == date and l[i].time == time then
+            table.remove(l, i)
+            changed = true
+        end
+    end
+    if changed and not nosave then CFG.save() end
+    return changed
+end
+
+function DC.rem_add(date, time, title)
+    DC.rem_del(date, time, true)
+    local l = DC.rem_list()
+    local ep  = espl_slot_epoch(date, time)
+    local now = os.time()
+    for _, b in ipairs(DC.REM_BEFORE) do
+        local at = ep - b * 60
+        if ep > 0 and at > now then
+            l[#l + 1] = {
+                date      = date,
+                time      = time,
+                title     = tostring(title or ""),
+                before    = b,
+                notify_at = os.date("!%Y-%m-%d %H:%M:%S", at + MSK_OFFSET) .. " MSK",
+            }
+        end
+    end
+    CFG.save()
+    DC.trace("remind: planned " .. tostring(date) .. " " .. tostring(time) .. ", total entries=" .. #l)
+end
+
+function DC.rem_at(e)
+    local y, mo, d, h, mi, sec = tostring(e.notify_at or ""):match("(%d+)-(%d+)-(%d+)%s+(%d+):(%d+):?(%d*)")
+    if y then
+        return espl_days_from_civil(tonumber(y), tonumber(mo), tonumber(d)) * 86400
+            + tonumber(h) * 3600 + tonumber(mi) * 60 + (tonumber(sec) or 0) - MSK_OFFSET
+    end
+    return nil
+end
+
+function DC.rem_check()
+    pcall(CFG.reload_if_changed)
+    local l = DC.rem_list()
+    local now = os.time()
+    local changed = false
+    local fire = {}
+    for i = #l, 1, -1 do
+        local e = l[i]
+        local at, ep, left = nil, 0, 0
+        if type(e) == "table" then
+            at   = DC.rem_at(e)
+            ep   = espl_slot_epoch(e.date, e.time)
+            left = ep - now
+        end
+        if not at or ep <= 0 or left <= 0 then
+            table.remove(l, i)
+            changed = true
+        elseif now >= at then
+            table.remove(l, i)
+            changed = true
+            if not (tonumber(e.before) == 3 and left <= 60) then
+                fire[#fire + 1] = { e = e, left = left }
+            end
+        end
+    end
+    if changed then CFG.save() end
+    for _, f in ipairs(fire) do
+        DC.trace("remind: fire " .. tostring(f.e.date) .. " " .. tostring(f.e.time) .. " left=" .. f.left)
+        DC.remind_notify({ date = f.e.date, time = f.e.time, title = f.e.title or "" }, f.left)
+    end
+end
+
+function DC.remind_start()
+    DC.spawn(function()
+        while true do
+            wait(1000)
+            local ok, err = pcall(DC.rem_check)
+            if not ok then DC.trace("rem_check ERROR: " .. tostring(err)) end
+        end
+    end)
+end
+
+function DC.esc_close_top()
+    if espl_modal_open then
+        espl_modal_open = false
+    elseif DC.color_open then
+        DC.color_open = false
+    else
+        espl_open[0]    = false
+        espl_modal_open = false
+        DC.esp_stop_polling()
+    end
+end
+
+function DC.esc_loop()
+    if DC.esc_registered then return end
+    DC.esc_registered = true
+    DC.esc_eaten = false
+
+    local WM_KEYDOWN, WM_KEYUP = 0x100, 0x101
+    local WM_SYSKEYDOWN, WM_SYSKEYUP = 0x104, 0x105
+    local VK_ESC = 0x1B
+
+    addEventHandler("onWindowMessage", function(msg, wparam, lparam)
+        if wparam ~= VK_ESC then return end
+
+        if msg == WM_KEYDOWN or msg == WM_SYSKEYDOWN then
+            if DC.esc_eaten then
+                consumeWindowMessage(true, false)
+                return
+            end
+            if espl_open[0] and not sampIsChatInputActive() and not sampIsDialogActive() then
+                DC.esc_eaten = true
+                consumeWindowMessage(true, false)
+                pcall(DC.esc_close_top)
+            end
+        elseif msg == WM_KEYUP or msg == WM_SYSKEYUP then
+            if DC.esc_eaten then
+                DC.esc_eaten = false
+                consumeWindowMessage(true, false)
+            end
         end
     end)
 end
@@ -7059,12 +10265,11 @@ function main()
         screens_root_folder = path
     end)
 
-    DC.icons_download()
-
     resolve_hwid(function(h)
         DC.trace('hwid resolved: ' .. tostring(h):sub(1, 8) .. '...')
         resolve_espl_author()
     end)
+    DC.offline_count = #DC.offline_load()
     DC.offline_flush()
     check_for_update()
 
@@ -7074,7 +10279,7 @@ function main()
     es_msg("{FFFF00}/esr {FFFFFF}(открыть CRM-дашборд твоих отчётов)")
     es_msg("{FFFF00}/esp {FFFFFF}(открыть планировщик событий в игре)")
     es_msg("{FFFF00}/esreset {FFFFFF}(сбросить кеш папки скриншотов)")
-
+    
     DC.es_handler = function(on_done)
         DC.trace('es_handler start')
         local done = type(on_done) == "function" and on_done or nil
@@ -7356,6 +10561,7 @@ function main()
         espl_dates         = espl_get_date_range()
         espl_selected_date = format_date_ymd(os.time() + MSK_OFFSET)
         espl_schedule       = {}
+        DC.anim = {}
         espl_top3            = {}
         espl_loading        = true
         espl_load_error      = ""
@@ -7378,7 +10584,7 @@ function main()
                 local ok, res = pcall(DC.sampev_onShowDialog, ...)
                 if not ok then
                     DC.print("[EventScan] onShowDialog error: " .. tostring(res))
-                    pcall(DC.bank_reset)
+                    pcall(DC.bank_reset, true)
                     return nil
                 end
                 return res
@@ -7390,7 +10596,9 @@ function main()
 
     DC.tp_load()
     DC.auto_load()
+    DC.anti_load()
     DC.key_load()
+    DC.gun_last_load()
     DC.pos_load()
     DC.hp_start_loop()
     DC.tp_watch_start()
@@ -7401,17 +10609,24 @@ function main()
     DC.state_watch_start()
     DC.effil_gc_loop()
     DC.session_start()
+    DC.remind_start()
+    pcall(DC.voice_legacy_cleanup)
+    DC.tut_loop()
+    DC.esc_loop()
+    DC.tut_auto_start()
 
     DC.raw_register("ehelper", function(params)
         DC.trace("command: /ehelper params=" .. tostring(params))
         local secs = tonumber(tostring(params or ""):match("%d+"))
         if secs and secs > 0 then
             secs = math.min(secs, 86400)
+            if DC.tut.active then DC.tut_finish(true, true) end
             DC.tp_timer.total     = secs
             DC.tp_timer.end_epoch = os.time() + secs
             DC.tp_set_visible(true)
             DC.tp_save()
             DC.tp_armed = true
+            pcall(DC.emenu_probe_schedule)
             return
         end
         DC.tp_set_visible(not DC.tp_timer.visible)
@@ -7436,11 +10651,37 @@ function main()
         es_msg("{FFFF00}/esc {FFFFFF}- сбросить сессию (сканы, игроки, окно помощника)")
         es_msg("{FFFF00}/-esr {FFFFFF}- скопировать ссылку CRM в буфер обмена")
         es_msg("{FFFF00}/enet {FFFFFF}- окно сетевых запросов текущей сессии")
+        es_msg("{FFFF00}/etime 1|3 {FFFFFF}- эмуляция напоминания о МП за 1 или 3 минуты")
         es_msg("{FFFF00}/esdb {FFFFFF}- вкл/выкл подробные логи (отладка)")
+    es_msg("{FFFF00}/eth {FFFFFF}- запустить/остановить обучение по окну помощника")
+    end)
+
+    DC.raw_register("eth", function()
+        DC.trace("command: /eth")
+        if DC.tut.active then
+            DC.tut_finish(true)
+            es_msg("Руководство остановлено.")
+        else
+            DC.tut_start()
+        end
     end)
 
     DC.raw_register("enet", function()
         DC.net_open[0] = not DC.net_open[0]
+    end)
+
+    DC.raw_register("etime", function(params)
+        local n = tonumber(tostring(params or ""):match("%d+"))
+        if n ~= 1 and n ~= 3 then
+            es_msg("Использование: {FFFF00}/etime 1 {FFFFFF}или {FFFF00}/etime 3 {FFFFFF}(эмуляция напоминания о МП)", "FFAA00")
+            return
+        end
+        local left = n * 60
+        DC.remind_notify({
+            date  = format_date_ymd(os.time() + MSK_OFFSET),
+            time  = os.date("!%H:%M", os.time() + MSK_OFFSET + left),
+            title = u8("Тестовое мероприятие"),
+        }, left)
     end)
 
     DC.raw_register("esdb", function()
@@ -7465,7 +10706,7 @@ function main()
     end)
 
     sampRegisterChatCommand("esreset", function()
-        os.remove(SCREENS_CACHE_FILE)
+        CFG.set("paths.screens", nil)
         screens_root_folder = nil
         es_msg("Кеш папки со скриншотами сброшен. Открываю окно для повторной настройки...")
         resolve_screens_root(function(path)
