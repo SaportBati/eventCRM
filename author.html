@@ -414,6 +414,22 @@
         return ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
       }
 
+      // «11.10.2026 · 23:48». В поле time может лежать как «HH:MM:SS», так и «DD.MM.YYYY HH:MM:SS»,
+      // поэтому берём из него только время — иначе дата дублируется.
+      function reportClock(r) {
+        const m = String(r.time || '').match(/(\d{1,2}:\d{2})(?::\d{2})?\s*$/);
+        return m ? m[1].padStart(5, '0') : '';
+      }
+      function fmtWhen(r) {
+        const d = reportDateStr(r);
+        const dd = d ? d.split('-').reverse().join('.') : '';
+        const hm = reportClock(r);
+        return (dd + (dd && hm ? ' · ' : '') + hm) || r.created_at || '—';
+      }
+      function reportSortKey(r) {
+        return reportDateStr(r) + ' ' + (reportClock(r) || '00:00') + ' ' + (r.created_at || '');
+      }
+
       // ---------------- aggregation ----------------
       function aggregateByDate(reports) {
         const map = new Map();
@@ -576,7 +592,7 @@
       function renderReportsTable(list, tbodyEl, emptyEl) {
         emptyEl.style.display = list.length ? 'none' : 'block';
         tbodyEl.innerHTML = list.map((r, i) => {
-          const when = (r.date || '') + (r.time ? ' ' + r.time : '');
+          const when = fmtWhen(r);
           return `
       <tr data-idx="${i}" class="report-row">
         <td class="mono">${escapeHtml(when || r.created_at || '—')}</td>
@@ -710,7 +726,7 @@
           });
         }
 
-        renderReportsTable(s.list.slice().sort((a, b) => (b.created_at || '') < (a.created_at || '') ? -1 : 1), $('authorTableBody'), $('authorEmptyState'));
+        renderReportsTable(s.list.slice().sort((a, b) => reportSortKey(b) < reportSortKey(a) ? -1 : 1), $('authorTableBody'), $('authorEmptyState'));
         revealStagger('.js-reveal', { stagger: .06 });
       }
 

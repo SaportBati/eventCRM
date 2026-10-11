@@ -366,6 +366,22 @@
         return normalizeDateStr(r.date) || normalizeDateStr(r.created_at) || '';
       }
 
+      // «11.10.2026 · 23:48». В поле time может лежать как «HH:MM:SS», так и «DD.MM.YYYY HH:MM:SS»,
+      // поэтому берём из него только время — иначе дата дублируется.
+      function reportClock(r) {
+        const m = String(r.time || '').match(/(\d{1,2}:\d{2})(?::\d{2})?\s*$/);
+        return m ? m[1].padStart(5, '0') : '';
+      }
+      function fmtWhen(r) {
+        const d = reportDateStr(r);
+        const dd = d ? d.split('-').reverse().join('.') : '';
+        const hm = reportClock(r);
+        return (dd + (dd && hm ? ' · ' : '') + hm) || r.created_at || '—';
+      }
+      function reportSortKey(r) {
+        return reportDateStr(r) + ' ' + (reportClock(r) || '00:00') + ' ' + (r.created_at || '');
+      }
+
       // ---------------- aggregation ----------------
       function aggregateByDate(reports) {
         const map = new Map();
@@ -456,8 +472,8 @@
         });
         const sortDir = $('sortSelect').value;
         list.sort((a, b) => {
-          const ka = a.created_at || (a.date + ' ' + a.time);
-          const kb = b.created_at || (b.date + ' ' + b.time);
+          const ka = reportSortKey(a);
+          const kb = reportSortKey(b);
           return sortDir === 'new' ? (ka < kb ? 1 : -1) : (ka < kb ? -1 : 1);
         });
         return list;
@@ -518,6 +534,21 @@
           titleFont: { weight: '600', size: 12 }, bodyFont: { size: 12 }
         };
       }
+      // Подпись значения на конце горизонтального столбца
+      const valueLabels = {
+        id: 'valueLabels',
+        afterDatasetsDraw(chart) {
+          const ctx = chart.ctx, t = chartTheme();
+          ctx.save();
+          ctx.fillStyle = t.ink2;
+          ctx.font = "500 12px 'Inter', system-ui, sans-serif";
+          ctx.textBaseline = 'middle';
+          chart.getDatasetMeta(0).data.forEach((bar, i) => {
+            ctx.fillText(String(chart.data.datasets[0].data[i]), bar.x + 8, bar.y);
+          });
+          ctx.restore();
+        }
+      };
       function lineDataset(label, labels, values, t) {
         return {
           labels,
@@ -556,16 +587,6 @@
         const byAuthor = aggregateByAuthor(allReports);
         const byPlayer = aggregatePlayers(allReports);
 
-        const barBase = (extra) => ({
-          responsive: true, maintainAspectRatio: false, animation: { duration: 400 },
-          plugins: { legend: { display: false }, tooltip: tooltipStyle(t) },
-          ...extra
-        });
-        const barSet = (label, labels, values) => ({
-          labels,
-          datasets: [{ label, data: values, backgroundColor: t.accent, borderRadius: 4, maxBarThickness: 18, borderSkipped: false }]
-        });
-
         if (charts.time) charts.time.destroy();
         charts.time = new Chart($('chartTime'), {
           type: 'line',
@@ -573,30 +594,33 @@
           options: lineOptions(t)
         });
 
-        if (charts.authors) charts.authors.destroy();
-        charts.authors = new Chart($('chartAuthors'), {
-          type: 'bar',
-          data: barSet('Отчётов', byAuthor.map(a => a[0]), byAuthor.map(a => a[1])),
-          options: barBase({
-            indexAxis: 'y',
-            scales: {
-              x: { beginAtZero: true, ticks: { ...tick, precision: 0 }, grid: { color: t.grid }, border: { display: false } },
-              y: { ticks: { ...tick, color: t.ink2 }, grid: { display: false }, border: { display: false } }
+        // Рейтинги — горизонтальные столбцы: подписи читаются без поворота, значения на концах
+        const ROW = 28;
+        const hbar = (id, key, label, pairs, minRows) => {
+          if (charts[key]) charts[key].destroy();
+          $(id).parentElement.style.height = (Math.max(pairs.length, minRows || 0) * ROW + 16) + 'px';
+          charts[key] = new Chart($(id), {
+            type: 'bar',
+            data: {
+              labels: pairs.map(p => p[0]),
+              datasets: [{ label, data: pairs.map(p => p[1]), backgroundColor: t.accent, borderRadius: 4, maxBarThickness: 14, borderSkipped: false }]
+            },
+            plugins: [valueLabels],
+            options: {
+              indexAxis: 'y', responsive: true, maintainAspectRatio: false, animation: { duration: 400 },
+              layout: { padding: { right: 32 } },
+              plugins: { legend: { display: false }, tooltip: tooltipStyle(t) },
+              scales: {
+                x: { display: false, beginAtZero: true },
+                y: { ticks: { ...tick, color: t.ink2, font: { size: 12 } }, grid: { display: false }, border: { display: false } }
+              }
             }
-          })
-        });
-
-        if (charts.players) charts.players.destroy();
-        charts.players = new Chart($('chartPlayers'), {
-          type: 'bar',
-          data: barSet('Явок', byPlayer.map(p => p[0]), byPlayer.map(p => p[1])),
-          options: barBase({
-            scales: {
-              x: { ticks: { ...tick, maxRotation: 40, autoSkip: false }, grid: { display: false }, border: { color: t.border } },
-              y: { beginAtZero: true, ticks: { ...tick, precision: 0 }, grid: { color: t.grid }, border: { display: false } }
-            }
-          })
-        });
+          });
+        };
+        hbar('chartAuthors', 'authors', 'Отчётов', byAuthor);
+        hbar('chartPlayers', 'players', 'Явок', byPlayer);
+        // график по времени — той же высоты, что и рейтинг авторов
+        $('chartTime').parentElement.style.height = $('chartAuthors').parentElement.style.height;
       }
 
       function renderReportsTable(fullList, tbodyEl, emptyEl) {
@@ -621,7 +645,7 @@
         }
 
         tbodyEl.innerHTML = list.map((r, i) => {
-          const when = (r.date || '') + (r.time ? ' ' + r.time : '');
+          const when = fmtWhen(r);
           return `
       <tr data-idx="${i}" class="report-row">
         <td class="mono">${escapeHtml(when || r.created_at || '—')}</td>
