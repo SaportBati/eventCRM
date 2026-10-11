@@ -6,24 +6,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Вход · Arizona Event CRM</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="icon" href="favicon.png" sizes="64x64" type="image/png">
   <link rel="apple-touch-icon" href="favicon.png">
   <style>
-    .login-card { width: 100%; max-width: 520px; }
-    .login-card h1 { margin-bottom: 12px; }
-    .login-card p { margin-bottom: 20px; }
-    .login-error { display: none; border-left: 3px solid var(--danger); background: var(--paper-3); padding: 10px 14px; margin-bottom: 20px; font-size: 13px; line-height: 1.6; color: var(--ink); }
+    .login-state { display: none; font-size: 14px; color: var(--text-2); text-align: center; padding: 24px 0 8px; }
+    .login-error { display: none; border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 8%, transparent); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 16px; font-size: 13px; line-height: 1.5; color: var(--text); }
     .login-error.show { display: block; }
-    .login-state { display: none; font-family: var(--mono); font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--ink-2); text-align: center; padding: 30px 0 10px; }
-    .login-state .spinner { margin-bottom: 14px; }
-    button.btn.discord { width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; background: #5865f2; border-color: #4752c4; color: #fff; }
-    button.btn.discord:hover { background: var(--ink); border-color: var(--ink); }
-    .login-or { display: flex; align-items: center; gap: 12px; margin: 22px 0; font-family: var(--mono); font-size: 10.5px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--ink-3); }
-    .login-or::before, .login-or::after { content: ''; flex: 1; height: 1px; background: var(--hair); }
-    .login-or + .auth-note { margin-top: 0; }
+    button.btn.discord { width: 100%; background: #5865f2; border-color: #5865f2; color: #fff; }
+    button.btn.discord:hover { background: #4752c4; border-color: #4752c4; }
+    .login-or { display: flex; align-items: center; gap: 12px; margin: 20px 0; font-size: 12px; color: var(--text-3); }
+    .login-or::before, .login-or::after { content: ''; flex: 1; height: 1px; background: var(--border); }
   </style>
   <script>(function(){try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
 </head>
@@ -31,7 +27,7 @@
 <body>
   <div class="auth-wrap">
     <div class="auth-card login-card">
-      <svg class="auth-ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="square"><rect x="3.5" y="7" width="9" height="6.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg>
+      <svg class="auth-ic" viewBox="0 0 30 30" fill="none"><rect x="1.5" y="1.5" width="27" height="27" stroke="currentColor" stroke-width="2"/><path d="M1.5 28.5L28.5 1.5" stroke="currentColor" stroke-width="2"/><circle cx="21" cy="21" r="4.5"/></svg>
       <h1>Вход в Arizona Event CRM</h1>
 
       <div class="login-state" id="stateBox"><div class="spinner"></div><span id="stateText">Проверяем вход…</span></div>
@@ -167,10 +163,9 @@
   function paint(){var d=eff()==='dark';b.innerHTML=d?SUN:MOON;var l=d?'Включить светлую тему':'Включить тёмную тему';b.title=l;b.setAttribute('aria-label',l);}
   b.addEventListener('click',function(){var n=eff()==='dark'?'light':'dark';root.setAttribute('data-theme',n);try{localStorage.setItem('theme',n);}catch(e){}paint();});
   (mq.addEventListener?mq.addEventListener('change',function(){if(!root.getAttribute('data-theme'))paint();}):0);
-  paint();root.appendChild(b);
+  paint();(document.querySelector('.nav-tabs-wrap')||root).appendChild(b);
 })();
 </script>
-<script src="fx.js"></script>
 </body>
 
 </html>

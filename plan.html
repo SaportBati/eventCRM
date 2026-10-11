@@ -6,7 +6,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Планировщик · Arizona Event CRM</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="icon" href="favicon.png" sizes="64x64" type="image/png">
@@ -688,10 +689,9 @@
   function changed(){paint();window.dispatchEvent(new Event('themechange'));}
   b.addEventListener('click',function(){var n=eff()==='dark'?'light':'dark';root.setAttribute('data-theme',n);try{localStorage.setItem('theme',n);}catch(e){}changed();});
   (mq.addEventListener?mq.addEventListener('change',function(){if(!root.getAttribute('data-theme'))changed();}):0);
-  paint();root.appendChild(b);
+  paint();(document.querySelector('.nav-tabs-wrap')||root).appendChild(b);
 })();
 </script>
-<script src="fx.js"></script>
 </body>
 
 </html>
