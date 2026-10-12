@@ -9,6 +9,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.1/anime.min.js"></script>
+  <script src="motion.js"></script>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="icon" href="favicon.png" sizes="64x64" type="image/png">
   <link rel="apple-touch-icon" href="favicon.png">
@@ -24,7 +26,7 @@
 <body>
 
   <header>
-    <div class="brand"><svg class="brand-mark" viewBox="0 0 30 30" fill="none"><rect x="1.5" y="1.5" width="27" height="27" stroke="currentColor" stroke-width="2"/><path d="M1.5 28.5L28.5 1.5" stroke="currentColor" stroke-width="2"/><circle cx="21" cy="21" r="4.5" fill="#2ee6a8"/></svg><div class="brand-copy">
+    <div class="brand"><svg class="brand-mark" viewBox="0 0 32 32" fill="none" role="img" aria-label="Arizona Event CRM"><rect class="logo-bg" width="32" height="32" rx="9"/><path class="logo-a" d="M9 23.5L16 8.5l7 15" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><circle class="logo-dot" cx="16" cy="19.6" r="1.9"/></svg><div class="brand-copy">
         <h1 id="brandTitle">Arizona Event CRM</h1>
         <div class="subtitle" id="brandSub">Журнал отчётов о проведенных МП</div>
       </div>
@@ -146,8 +148,6 @@
       let allReports = [];
       let balancesMap = new Map(); // author -> balance from D1
       let charts = {};
-      const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      const hasGsap = typeof gsap !== 'undefined';
 
       const $ = (id) => document.getElementById(id);
 
@@ -267,41 +267,18 @@
       }
       // ==================================================
 
-      // ---------------- motion helpers ----------------
+      // ---------------- motion (motion.js / anime.js) ----------------
       function revealStagger(selectorOrEls, opts) {
-        if (!hasGsap || reduceMotion) return;
-        const els = typeof selectorOrEls === 'string' ? document.querySelectorAll(selectorOrEls) : selectorOrEls;
-        if (!els || !els.length) return;
-        gsap.fromTo(els, { opacity: 0, y: 22 }, Object.assign({
-          opacity: 1, y: 0, duration: .7, ease: 'power3.out', stagger: .06, clearProps: 'transform'
-        }, opts || {}));
+        opts = opts || {};
+        Motion.reveal(selectorOrEls, {
+          stagger: opts.stagger != null ? opts.stagger * 1000 : 40,
+          duration: opts.duration ? opts.duration * 1000 : undefined,
+          y: opts.y
+        });
       }
       function countUp(el, target, opts) {
-        if (!el) return;
-        const isFloat = opts && opts.decimals;
-        if (!hasGsap || reduceMotion) {
-          el.textContent = isFloat ? Number(target).toFixed(isFloat) : Math.round(target).toLocaleString('ru-RU');
-          return;
-        }
-        const obj = { v: 0 };
-        gsap.to(obj, {
-          v: target, duration: 1.1, ease: 'power2.out', delay: (opts && opts.delay) || 0,
-          onUpdate() { el.textContent = isFloat ? obj.v.toFixed(isFloat) : Math.round(obj.v).toLocaleString('ru-RU'); }
-        });
-      }
-      function magnetTilt(cardSelector) {
-        if (reduceMotion || !hasGsap) return;
-        document.querySelectorAll(cardSelector).forEach(card => {
-          card.addEventListener('mousemove', (e) => {
-            const r = card.getBoundingClientRect();
-            const x = (e.clientX - r.left) / r.width - 0.5;
-            const y = (e.clientY - r.top) / r.height - 0.5;
-            gsap.to(card, { rotateX: y * -3.5, rotateY: x * 3.5, duration: .4, ease: 'power2.out', transformPerspective: 700 });
-          });
-          card.addEventListener('mouseleave', () => {
-            gsap.to(card, { rotateX: 0, rotateY: 0, duration: .5, ease: 'power3.out' });
-          });
-        });
+        opts = opts || {};
+        Motion.countUp(el, target, { decimals: opts.decimals, delay: (opts.delay || 0) * 1000 });
       }
 
       // ---------------- status / gate ----------------
@@ -459,6 +436,7 @@
       function openLightbox(url) {
         lightboxImg.src = url;
         lightbox.classList.add('open');
+        Motion.pop(lightboxImg, { y: 0, scale: 0.96, duration: 220 });
         document.body.style.overflow = 'hidden';
       }
       function closeLightbox() {
@@ -579,7 +557,7 @@
       function lineOptions(t) {
         const tick = { color: t.text, font: { size: 11 } };
         return {
-          responsive: true, maintainAspectRatio: false, animation: { duration: 400 },
+          responsive: true, maintainAspectRatio: false, animation: { duration: 700, easing: 'easeOutQuart' },
           interaction: { intersect: false, mode: 'index' },
           plugins: { legend: { display: false }, tooltip: tooltipStyle(t) },
           scales: {
@@ -623,9 +601,7 @@
             const isOpen = detail.style.display !== 'none';
             if (!isOpen) {
               detail.style.display = 'table-row';
-              if (hasGsap && !reduceMotion) {
-                gsap.fromTo(detail.querySelector('.detail-inner'), { opacity: 0, y: -6 }, { opacity: 1, y: 0, duration: .35, ease: 'power2.out' });
-              }
+              Motion.pop(detail.querySelector('.detail-inner'), { y: -6, scale: 1 });
             } else {
               detail.style.display = 'none';
             }
@@ -684,7 +660,8 @@
           const wrap = card.querySelector('.seal-ring-wrap');
           animateSealRing(wrap, Number(card.dataset.ring), card.dataset.ring == '78' ? 7 : 6, Number(card.dataset.week) / Number(card.dataset.max || 1));
         });
-        revealStagger('#authorsGrid .author-card', { stagger: .05, y: 26 });
+        revealStagger('#authorsGrid .author-card', { stagger: .05, y: 12 });
+        Motion.grow('#authorsGrid .week-strip .bar');
       }
       $('authorsSearch').addEventListener('input', renderAuthorsGrid);
 
@@ -702,12 +679,7 @@
         const balEl = $('statBalance');
         balEl.classList.remove('gold', 'teal', 'crimson');
         balEl.classList.add(s.balance < 0 ? 'crimson' : 'gold');
-        if (!hasGsap || reduceMotion) {
-          balEl.textContent = fmtMoney(s.balance);
-        } else {
-          const obj = { v: 0 };
-          gsap.to(obj, { v: s.balance, duration: 1.2, delay: .15, ease: 'power2.out', onUpdate() { balEl.textContent = fmtMoney(Math.round(obj.v)); } });
-        }
+        Motion.countUp(balEl, s.balance, { delay: 150, format: function (v) { return fmtMoney(Math.round(v)); } });
 
         $('heroRingWrap').style.width = '96px';
         $('heroRingWrap').style.height = '96px';

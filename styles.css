@@ -114,12 +114,14 @@ header {
   border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-.brand-mark { width: 26px; height: 26px; color: var(--text); }
-.brand-mark circle { fill: var(--accent); }
+.brand-mark { width: 28px; height: 28px; flex-shrink: 0; }
+.logo-bg { fill: var(--accent); }
+.logo-a { stroke: var(--accent-fg); }
+.logo-dot { fill: var(--accent-fg); transform-box: fill-box; transform-origin: center; }
 .brand-copy h1 { font-size: 15px; font-weight: 600; letter-spacing: -.01em; line-height: 1.2; white-space: nowrap; }
 .subtitle { display: none; }
 
-.nav-tabs-wrap { display: flex; align-items: stretch; flex: 1; min-width: 0; height: 100%; margin-left: 8px; }
+.nav-tabs-wrap { position: relative; display: flex; align-items: stretch; flex: 1; min-width: 0; height: 100%; margin-left: 8px; }
 .nav-tabs { display: flex; align-items: stretch; gap: 2px; }
 .nav-tabs-secondary { position: relative; margin-left: 12px; padding-left: 12px; }
 .nav-tabs-secondary::before {
@@ -135,12 +137,15 @@ header {
 .nav-tabs a.active::after {
   content: ''; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px; background: var(--text);
 }
+.has-ind a.active::after { display: none; }
+.nav-ind { position: absolute; left: 0; bottom: -1px; height: 2px; width: 0; background: var(--text); pointer-events: none; }
 .nav-tabs-wrap .theme-toggle { position: static; margin: auto 0 auto auto; }
 
 @media (max-width: 760px) {
   header { height: auto; flex-wrap: wrap; gap: 0 16px; padding: 10px 16px 0; }
   .nav-tabs-wrap { order: 3; flex-basis: 100%; height: 44px; margin: 8px 0 0; overflow-x: auto; }
   .nav-tabs a { white-space: nowrap; }
+  .nav-ind { bottom: 0; }
   .nav-tabs-wrap .theme-toggle { position: absolute; top: 10px; right: 16px; margin: 0; }
 }
 
@@ -214,6 +219,7 @@ button.btn.primary:hover { background: var(--accent-hover); border-color: var(--
 button.btn.ghost { border-color: transparent; background: transparent; color: var(--text-2); }
 button.btn.ghost:hover { background: var(--surface-2); color: var(--text); }
 button.btn.big { height: 40px; padding: 0 20px; }
+button.btn:active:not(:disabled) { transform: translateY(1px); }
 button.btn:disabled { opacity: .5; cursor: not-allowed; }
 
 /* ---------- Dashboard table ---------- */
@@ -270,7 +276,7 @@ tr.report-row.expanded td:first-child { box-shadow: inset 2px 0 0 var(--accent);
 .scan-zoom { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 6px; background: rgba(0, 0, 0, .65); color: #fff; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .15s; }
 .scan-thumb:hover .scan-zoom { opacity: 1; }
 .lightbox { position: fixed; inset: 0; z-index: 3000; display: none; align-items: center; justify-content: center; padding: 40px; background: rgba(0, 0, 0, .8); }
-.lightbox.open { display: flex; animation: fade .15s both; }
+.lightbox.open { display: flex; }
 .lightbox-frame { position: relative; max-width: min(92vw, 960px); max-height: 88vh; }
 .lightbox img { display: block; max-width: min(92vw, 960px); max-height: 88vh; border-radius: var(--radius-lg); }
 .lightbox-close { position: absolute; top: -12px; right: -12px; width: 32px; height: 32px; border: 1px solid var(--border-strong); border-radius: 50%; background: var(--surface); color: var(--text); cursor: pointer; display: flex; align-items: center; justify-content: center; }
@@ -286,8 +292,7 @@ tr.report-row.expanded td:first-child { box-shadow: inset 2px 0 0 var(--accent);
 /* ---------- Auth ---------- */
 .auth-wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
 .auth-card { width: 100%; max-width: 420px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); padding: 32px; }
-.auth-card .auth-ic { width: 32px; height: 32px; color: var(--text); margin-bottom: 20px; }
-.auth-card .auth-ic circle { fill: var(--accent); }
+.auth-card .auth-ic { width: 40px; height: 40px; margin-bottom: 20px; }
 .auth-card h1 { font-size: 20px; font-weight: 600; letter-spacing: -.02em; line-height: 1.3; margin-bottom: 8px; }
 .auth-card p { color: var(--text-2); line-height: 1.6; margin-bottom: 20px; }
 .auth-card code { font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); padding: 1px 6px; border-radius: var(--radius-sm); }
@@ -310,7 +315,7 @@ tr.report-row.expanded td:first-child { box-shadow: inset 2px 0 0 var(--accent);
 .author-sub { font-size: 12px; color: var(--text-3); margin-top: 2px; }
 .leader-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; color: var(--accent); background: var(--accent-soft); padding: 1px 8px; border-radius: 999px; margin-bottom: 6px; }
 .week-strip { display: flex; align-items: flex-end; gap: 4px; height: 32px; margin-top: auto; }
-.week-strip .bar { flex: 1; background: var(--border); min-height: 3px; border-radius: 2px; }
+.week-strip .bar { transform-origin: bottom; flex: 1; background: var(--border); min-height: 3px; border-radius: 2px; }
 .week-strip .bar.hit { background: var(--accent); }
 .week-strip .bar.today { outline: 1px solid var(--text-3); outline-offset: 1px; }
 .meta-row { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-2); }
@@ -400,7 +405,7 @@ tr.report-row.expanded td:first-child { box-shadow: inset 2px 0 0 var(--accent);
 .slot-owner-title { margin-top: 1px; font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .input-modal { display: none; position: fixed; z-index: 2000; width: 340px; max-width: calc(100vw - 24px); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); padding: 20px; }
-.input-modal.show { display: block; animation: fade .12s both; }
+.input-modal.show { display: block; }
 .input-modal-header { font-size: 16px; font-weight: 600; letter-spacing: -.01em; margin-bottom: 16px; }
 .input-modal input, .input-modal select { width: 100%; margin-bottom: 16px; }
 #modalViewInfo { margin-bottom: 16px; font-size: 14px; line-height: 1.7; }

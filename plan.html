@@ -9,6 +9,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.1/anime.min.js"></script>
+  <script src="motion.js"></script>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="icon" href="favicon.png" sizes="64x64" type="image/png">
   <link rel="apple-touch-icon" href="favicon.png">
@@ -18,7 +20,7 @@
 <body>
 
   <header>
-    <div class="brand"><svg class="brand-mark" viewBox="0 0 30 30" fill="none"><rect x="1.5" y="1.5" width="27" height="27" stroke="currentColor" stroke-width="2"/><path d="M1.5 28.5L28.5 1.5" stroke="currentColor" stroke-width="2"/><circle cx="21" cy="21" r="4.5" fill="#2ee6a8"/></svg><div class="brand-copy">
+    <div class="brand"><svg class="brand-mark" viewBox="0 0 32 32" fill="none" role="img" aria-label="Arizona Event CRM"><rect class="logo-bg" width="32" height="32" rx="9"/><path class="logo-a" d="M9 23.5L16 8.5l7 15" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><circle class="logo-dot" cx="16" cy="19.6" r="1.9"/></svg><div class="brand-copy">
         <h1 id="brandTitle">Arizona Event CRM</h1>
         <div class="subtitle" id="brandSub">Планировщик событий</div>
       </div>
@@ -390,6 +392,7 @@
         grid.style.opacity = '0.35';
         await loadSchedule();
         renderSlots();
+        animateSlots();
         grid.style.opacity = '1';
       }
 
@@ -437,6 +440,10 @@
         } catch (e) {
           console.error('Failed to load schedule:', e);
         }
+      }
+
+      function animateSlots(delay) {
+        Motion.reveal('#planGrid .time-slot', { y: 6, stagger: 6, duration: 350, delay: delay || 0 });
       }
 
       // ============== ОТРИСОВКА СЛОТОВ ==============
@@ -539,6 +546,7 @@
         }
 
         modal.classList.add('show');
+        Motion.pop(modal, { y: 6, scale: 0.98, duration: 180 });
         if (!isForeign) {
           if (isAdmin) {
             $('eventAuthor').focus();
@@ -603,7 +611,9 @@
             return;
           }
           schedule[currentTime] = { author: data.author, title: data.title };
+          const savedTime = currentTime;
           renderSlots();
+          Motion.pulse('.time-slot[data-time="' + savedTime + '"]');
           closeModal();
         } catch (e) {
           console.error('Failed to save booking:', e);
@@ -672,6 +682,8 @@
         $('app').style.display = 'block';
 
         renderSlots();
+        Motion.reveal('.plan-title, .date-tabs', { y: 8, stagger: 60 });
+        animateSlots(120);
       }
 
       init();
