@@ -378,7 +378,7 @@ local WORKER_URL_FALLBACK = "https://nehto--9aade89ea49811f1a9051607ee4eb77e.web
 local active_worker_url = WORKER_URL_PRIMARY
 local SCAN_RADIUS  = 200.0
 
-local SCRIPT_VERSION      = "2.0"
+local SCRIPT_VERSION      = "2.1"
 local VERSION_CHECK_URL   = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/version.txt"
 local UPDATE_DOWNLOAD_URL = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/event.lua"
 
@@ -3468,6 +3468,37 @@ function DC.u32(c, mul)
     return imgui.ColorConvertFloat4ToU32(imgui.ImVec4(c.x, c.y, c.z, a))
 end
 
+function DC.damp(cur, target, speed, dt)
+    return target + (cur - target) * math.exp(-speed * dt)
+end
+
+DC.vp = {}
+function DC.vshow(key, open, dur)
+    dur = dur or 0.18
+    local now = os.clock()
+    local v = DC.vp[key]
+    if not v then v = { p = 0, t = now } DC.vp[key] = v end
+    local dt = math.min(now - v.t, 0.1)
+    v.t = now
+    if open then v.p = math.min(v.p + dt / dur, 1)
+    else v.p = math.max(v.p - dt / (dur * 0.8), 0) end
+    return v.p > 0 or (open and true or false)
+end
+
+function DC.vfade(key)
+    local v = DC.vp[key]
+    if not v then return 1 end
+    local p = v.p
+    return math.max(p * p * (3 - 2 * p), 0.01)
+end
+
+function DC.vpush(key)
+    local a = DC.vfade(key)
+    local ok = pcall(imgui.PushStyleVarFloat, imgui.StyleVar.Alpha, a)
+    if ok then DC.cur_alpha = a end
+    return ok
+end
+
 function DC.fade_get(key, dur)
     local now = os.clock()
     local f = DC.fades[key]
@@ -3642,7 +3673,7 @@ DC.anim = {}
 function DC.tween(key, target, speed, eps)
     local v  = DC.anim[key] or 0
     local dt = math.min(imgui.GetIO().DeltaTime, 0.1)
-    v = v + (target - v) * math.min(dt * (speed or 8), 1)
+    v = target + (v - target) * math.exp(-(speed or 8) * dt)
     if math.abs(target - v) < (eps or 0.5) then v = target end
     DC.anim[key] = v
     return v
@@ -3707,10 +3738,321 @@ function DC.contrast_text(hex)
     return imgui.ImVec4(1, 1, 1, 1)
 end
 
-imgui.OnFrame(function() return espl_open[0] end, function()
+DC.TPL_URL = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/teleport.json"
+DC.TPL_CD  = 1.5
+DC.tpl = {
+    list = nil, loading = false, err = "", cd_until = 0,
+    open = false, focus = false, p = 0, t3h = nil,
+    search = imgui_new.char[64](0),
+    q_prev = nil, filtered = nil, filtered_src = nil,
+}
+
+function DC.tpl_filter(q)
+    local T = DC.tpl
+    if T.q_prev == q and T.filtered and T.filtered_src == T.list then return T.filtered end
+    local ql  = DC.lower_u8(q)
+    local res = {}
+    for _, it in ipairs(T.list or {}) do
+        if not it.key then it.key = DC.lower_u8(it.name) end
+        if ql == "" or it.key:find(ql, 1, true) then res[#res + 1] = it end
+    end
+    T.q_prev, T.filtered, T.filtered_src = q, res, T.list
+    return res
+end
+
+-- выполняется в effil-потоке (без upvalue!)
+function DC.tpl_worker(channel, url)
+    local ok_r, requests = pcall(require, "requests")
+    if not ok_r or not requests then
+        channel:push({ ok = false, err = "no_requests" })
+        return
+    end
+    local ok, resp
+    for _ = 1, 4 do -- ручное следование редиректам
+        ok, resp = pcall(requests.get, url, {
+            headers = { ["User-Agent"] = "SAMP-EventScan/1.4" },
+            timeout = 20
+        })
+        if not ok or not resp then break end
+        local sc = tonumber(resp.status_code)
+        if sc == 301 or sc == 302 or sc == 303 or sc == 307 or sc == 308 then
+            local loc
+            if type(resp.headers) == "table" then
+                for k, v in pairs(resp.headers) do
+                    if tostring(k):lower() == "location" then loc = tostring(v) end
+                end
+            end
+            if not loc or not loc:match("^https?://") then break end
+            url = loc
+        else
+            break
+        end
+    end
+    if not ok or not resp then
+        channel:push({ ok = false, err = "network_fail" })
+        return
+    end
+    if resp.status_code ~= 200 or type(resp.text) ~= "string" then
+        channel:push({ ok = false, err = "http_" .. tostring(resp.status_code) })
+        return
+    end
+    channel:push({ ok = true, raw = resp.text })
+end
+
+function DC.tpl_load()
+    local T = DC.tpl
+    if T.loading then return end
+    T.loading = true
+    T.err = ""
+    DC.spawn(function()
+        local ch = effil.channel()
+        local ok_s, thr = pcall(DC.effil_start, DC.tpl_worker, ch, DC.TPL_URL)
+        local res
+        if ok_s then
+            res = wait_for_channel(ch, 20000, thr)
+        else
+            res = { ok = false, err = "thread_start_fail" }
+        end
+
+        if res and res.ok and type(res.raw) == "string" then
+            local okd, data = pcall(dkjson.decode, res.raw)
+            if okd and type(data) == "table" then
+                local list = {}
+                for _, it in ipairs(data) do
+                    local x, y, z = tonumber(it.x), tonumber(it.y), tonumber(it.z)
+                    if x and y and z then
+                        local nm = tostring(it.name or "?")
+                        local oku, nm8 = pcall(function() return u8(nm) end) -- cp1251 -> utf8 для imgui
+                        list[#list + 1] = {
+                            idx      = #list + 1,
+                            name     = oku and nm8 or nm,
+                            x = x, y = y, z = z,
+                            world    = math.floor(tonumber(it.world) or 0),
+                            interior = math.floor(tonumber(it.interior) or 0),
+                        }
+                    end
+                end
+                T.list = list
+                T.err = ""
+                DC.trace("teleport list loaded: " .. #list)
+            else
+                T.err = "json_parse_fail"
+            end
+        else
+            T.err = tostring(res and res.err or "timeout")
+        end
+        T.loading = false
+    end)
+end
+
+function DC.tpl_go(it)
+    DC.send_cmd(string.format("/aplpos %.4f %.4f %.4f %d %d", it.x, it.y, it.z, it.world, it.interior))
+    DC.tpl.cd_until = os.clock() + DC.TPL_CD
+end
+
+function DC.trunc_dots(text, w, force)
+    if not force and imgui.CalcTextSize(text).x <= w then return text end
+    local dots = "..."
+    local result, i = "", 1
+    while i <= #text do
+        local b = text:byte(i)
+        local clen = 1
+        if b >= 0xF0 then clen = 4 elseif b >= 0xE0 then clen = 3 elseif b >= 0xC0 then clen = 2 end
+        local cand = result .. text:sub(i, i + clen - 1)
+        if imgui.CalcTextSize(cand .. dots).x > w then break end
+        result = cand
+        i = i + clen
+    end
+    return result .. dots
+end
+
+function DC.wrap_lines(text, w, maxl)
+    local words = {}
+    for wd in text:gmatch("%S+") do words[#words + 1] = wd end
+    local lines, cur, i, cut = {}, "", 1, false
+    while i <= #words do
+        local try = (cur == "") and words[i] or (cur .. " " .. words[i])
+        if cur ~= "" and imgui.CalcTextSize(try).x > w then
+            lines[#lines + 1] = cur
+            cur = ""
+            if #lines >= maxl then cut = true break end
+        else
+            cur = try
+            i = i + 1
+        end
+    end
+    if not cut and cur ~= "" then lines[#lines + 1] = cur end
+    if #lines == 0 then lines[1] = text end
+    for k = 1, #lines do lines[k] = DC.trunc_dots(lines[k], w) end
+    if cut then lines[#lines] = DC.trunc_dots(lines[#lines], w, true) end
+    return lines
+end
+
+function DC.tpl_plural(n)
+    local m10, m100 = n % 10, n % 100
+    if m10 == 1 and m100 ~= 11 then return "локация" end
+    if m10 >= 2 and m10 <= 4 and (m100 < 12 or m100 > 14) then return "локации" end
+    return "локаций"
+end
+
+function DC.tpl_panel_impl(pos, size)
+    local T = DC.tpl
+    local muted = DC.tc(0.65, 0.75, 0.65, 1)
+    local e = T.p * T.p * (3 - 2 * T.p)
+    local showlist = e > 0.5 or (e == 0.5 and T.open)
+    local ca = showlist and (e * 2 - 1) or (1 - e * 2)
+    local base_a = DC.vfade("espl")
+    imgui.SetNextWindowPos(pos, imgui.Cond.Always)
+    imgui.SetNextWindowSize(size, imgui.Cond.Always)
+    imgui.Begin('##espl_tp_panel', nil,
+        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize +
+        imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoTitleBar +
+        imgui.WindowFlags.NoMove + imgui.WindowFlags.NoScrollbar +
+        imgui.WindowFlags.NoScrollWithMouse)
+
+    local a_now = math.max(ca * base_a, 0.01)
+    local a_pushed = pcall(imgui.PushStyleVarFloat, imgui.StyleVar.Alpha, a_now)
+    if a_pushed then DC.cur_alpha = a_now end
+
+    local cw = imgui.GetContentRegionAvail().x
+    local dl = imgui.GetWindowDrawList()
+
+    if not showlist then
+        -- свёрнутый вид: заголовок, разделитель, кнопка
+        center_text(u8("Телепорт"), hexcol(GREEN_BRIGHT))
+        imgui.Spacing()
+        imgui.PushStyleColor(imgui.Col.Separator, hexcol(GREEN_MID, 0.3))
+        imgui.Separator()
+        imgui.PopStyleColor(1)
+        imgui.Spacing()
+
+        local avail_h = imgui.GetContentRegionAvail().y
+        local bh = math.max(math.min(avail_h, 40), 30)
+        imgui.SetCursorPosY(imgui.GetCursorPosY() + math.max((avail_h - bh) / 2, 0))
+        local label = u8("Меню телепорта")
+        if DC.cbtn("es_tpl_menu", label, imgui.ImVec2(cw, bh), "tpl_pin", hexcol(GREEN_BRIGHT), true) then
+            T.open  = true
+            T.focus = true
+            T.search[0] = 0
+            T.q_prev = nil
+            if not T.list and not T.loading then DC.tpl_load() end
+        end
+    else
+        -- шапка: квадратная кнопка назад + заголовок по центру
+        local hh = 28
+        local hp = imgui.GetCursorScreenPos()
+        local back = DC.cbtn("es_tpl_back", DC.icon_get("caret_left") and "" or "<", imgui.ImVec2(hh, hh),
+            "caret_left", hexcol(GREEN_BRIGHT), true)
+        if back then T.open = false end
+        do
+            local title = u8("Телепорт")
+            local tw = imgui.CalcTextSize(title).x
+            dl:AddText(imgui.ImVec2(hp.x + (cw - tw) / 2, hp.y + (hh - imgui.GetTextLineHeight()) / 2),
+                DC.u32(hexcol(GREEN_BRIGHT)), title)
+        end
+
+        imgui.Spacing()
+        imgui.PushStyleColor(imgui.Col.Separator, hexcol(GREEN_MID, 0.3))
+        imgui.Separator()
+        imgui.PopStyleColor(1)
+        imgui.Spacing()
+
+        if not T.list then
+            if T.loading then
+                center_text(u8("Загрузка..."), hexcol(GREEN_BRIGHT, 0.7))
+            else
+                imgui.TextColored(imgui.ImVec4(1, 0.35, 0.35, 1),
+                    espl_truncate_to_width(T.err ~= "" and T.err or "error", cw))
+                if DC.cbtn("es_tpl_retry", u8("Повторить"), imgui.ImVec2(cw, 28), "reload", hexcol(ESPL_AMBER), false) then
+                    DC.tpl_load()
+                end
+            end
+        else
+            -- поиск
+            imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(34, 6))
+            imgui.PushStyleVarFloat(imgui.StyleVar.FrameBorderSize, 1.0)
+            imgui.PushStyleColor(imgui.Col.Border, hexcol(GREEN_BRIGHT, 0.55))
+            imgui.PushItemWidth(cw)
+            if T.focus then
+                imgui.SetKeyboardFocusHere()
+                T.focus = false
+            end
+            imgui.InputText("##es_tpl_search", T.search, ffi.sizeof(T.search))
+            imgui.PopItemWidth()
+            imgui.PopStyleColor(1)
+            imgui.PopStyleVar(2)
+            local smin, smax = imgui.GetItemRectMin(), imgui.GetItemRectMax()
+            local isz = math.floor(imgui.GetFontSize())
+            DC.icon_put("search", smin.x + 11, smin.y + (smax.y - smin.y - isz) / 2, isz, isz,
+                DC.u32(imgui.ImVec4(1, 1, 1, 0.55)))
+            local q = ffi.string(T.search)
+            if q == "" then
+                dl:AddText(imgui.ImVec2(smin.x + 34, smin.y + 6),
+                    DC.u32(imgui.ImVec4(1, 1, 1, 0.35)), u8("Поиск локации"))
+            end
+            imgui.Spacing()
+
+            local list = DC.tpl_filter(q:match("^%s*(.-)%s*$"))
+            local lhh = math.max(imgui.GetContentRegionAvail().y, 40)
+            imgui.BeginChild("##es_tpl_list", imgui.ImVec2(cw, lhh), false)
+            if #list == 0 then
+                imgui.Dummy(imgui.ImVec2(1, 8))
+                center_text(u8(#T.list == 0 and "Список пуст" or "Ничего не найдено"), imgui.ImVec4(1, 1, 1, 0.45))
+            else
+                local cd  = os.clock() < T.cd_until
+                local cdl = imgui.GetWindowDrawList()
+                local lh  = imgui.GetTextLineHeight()
+                imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 5))
+                local bw   = imgui.GetContentRegionAvail().x - 4
+                local padl = 34
+                local tw   = bw - padl - 10
+                for _, it in ipairs(list) do
+                    if it.wl_w ~= tw then
+                        it.wl, it.wl_w = DC.wrap_lines(it.name, tw, 2), tw
+                    end
+                    local nl_ = #it.wl
+                    local rh  = math.max(34, nl_ * lh + (nl_ - 1) * 2 + 16)
+                    local rp  = imgui.GetCursorScreenPos()
+                    local rb  = imgui.ImVec2(rp.x + bw, rp.y + rh)
+                    local clicked = imgui.InvisibleButton("##es_tpl_row" .. it.idx, imgui.ImVec2(bw, rh))
+                    local hv = DC.tween("tplr" .. it.idx, (imgui.IsItemHovered() and not cd) and 1 or 0, 14, 0.01)
+                    local dim = cd and 0.45 or 1
+
+                    cdl:AddRectFilled(rp, rb, DC.u32(imgui.ImVec4(1, 1, 1, 0.045 + 0.05 * hv)), 8)
+                    cdl:AddRectFilled(rp, rb, DC.u32(hexcol(GREEN_BRIGHT, 0.14 * hv)), 8)
+                    cdl:AddRect(rp, rb, DC.u32(hexcol(GREEN_BRIGHT, (0.18 + 0.60 * hv) * dim)), 8, 15, 1.2)
+                    DC.icon_put("tpl_pin", rp.x + 10, rp.y + (rh - 16) / 2, 16, 16,
+                        DC.u32(hexcol(GREEN_BRIGHT, (0.45 + 0.55 * hv) * dim)))
+                    local ty = rp.y + (rh - (nl_ * lh + (nl_ - 1) * 2)) / 2
+                    for k, ln in ipairs(it.wl) do
+                        cdl:AddText(imgui.ImVec2(rp.x + padl, ty + (k - 1) * (lh + 2)),
+                            DC.u32(imgui.ImVec4(1, 1, 1, 0.92 * dim)), ln)
+                    end
+                    if clicked and not cd then DC.tpl_go(it) end
+                end
+                imgui.PopStyleVar(1)
+            end
+            imgui.EndChild()
+        end
+    end
+
+    if a_pushed then imgui.PopStyleVar(1) end
+    DC.cur_alpha = base_a
+    imgui.End()
+end
+
+function DC.tpl_panel(pos, size)
+    local ok, err = pcall(DC.tpl_panel_impl, pos, size)
+    if not ok and not DC.tpl_err then
+        DC.tpl_err = true
+        DC.trace("tpl_panel ERROR: " .. tostring(err))
+    end
+end
+
+imgui.OnFrame(function() return DC.vshow("espl", espl_open[0], 0.20) end, function()
     DC.ftrace("begin")
     DC.espl_tick()
-    local es_fade = DC.alpha_push("espl", 0.20)
+    local es_fade = DC.vpush("espl")
     imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 8)
     imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
     imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 8))
@@ -4160,8 +4502,22 @@ imgui.OnFrame(function() return espl_open[0] end, function()
     imgui.End()
 
     local top3_w = side_win_size.x
-    imgui.SetNextWindowPos(imgui.ImVec2(side_win_pos.x, side_win_pos.y + side_win_size.y + SIDE_GAP), imgui.Cond.Always)
-    imgui.SetNextWindowSize(imgui.ImVec2(top3_w, 0), imgui.Cond.Always)
+    local t3_pos  = imgui.ImVec2(side_win_pos.x, side_win_pos.y + side_win_size.y + SIDE_GAP)
+    local t3_size = imgui.ImVec2(top3_w, 0)
+    local TP = DC.tpl
+    do
+        local dt = math.min(imgui.GetIO().DeltaTime, 0.1)
+        if TP.open then TP.p = math.min(TP.p + dt / 0.30, 1) else TP.p = math.max(TP.p - dt / 0.30, 0) end
+    end
+    local tp_e   = TP.p * TP.p * (3 - 2 * TP.p)
+    local t3_a   = 1 - math.min(tp_e * 1.8, 1)
+    local t3_base = DC.vfade("espl")
+    local t3_pushed = false
+    if t3_a > 0.01 then
+    t3_pushed = pcall(imgui.PushStyleVarFloat, imgui.StyleVar.Alpha, math.max(t3_base * t3_a, 0.01))
+    if t3_pushed then DC.cur_alpha = t3_base * t3_a end
+    imgui.SetNextWindowPos(t3_pos, imgui.Cond.Always)
+    imgui.SetNextWindowSize(t3_size, imgui.Cond.Always)
 
     imgui.Begin('##espl_top3_panel', nil,
         imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize +
@@ -4231,8 +4587,22 @@ imgui.OnFrame(function() return espl_open[0] end, function()
         end
     end
 
-    local t3_pos, t3_size = imgui.GetWindowPos(), imgui.GetWindowSize()
+    t3_pos, t3_size = imgui.GetWindowPos(), imgui.GetWindowSize()
+    TP.t3h = t3_size.y
     imgui.End()
+    if t3_pushed then imgui.PopStyleVar(1) end
+    DC.cur_alpha = t3_base
+    end
+
+    do
+        local bottom = main_win_pos.y + main_win_size.y
+        local cy = t3_pos.y + (TP.t3h or 0) + SIDE_GAP
+        local ch = math.max(bottom - cy, 64)
+        local oy = t3_pos.y
+        local oh = math.max(bottom - oy, 220)
+        DC.tpl_panel(imgui.ImVec2(t3_pos.x, cy + (oy - cy) * tp_e),
+                     imgui.ImVec2(t3_size.x, ch + (oh - ch) * tp_e))
+    end
 
     imgui.PopStyleColor(3)
     imgui.PopStyleVar(4)
@@ -4244,8 +4614,8 @@ imgui.OnFrame(function() return espl_open[0] end, function()
     if (DC.espl_trace_left or 0) > 0 then DC.espl_trace_left = DC.espl_trace_left - 1 end
 end)
 
-imgui.OnFrame(function() return espl_modal_open end, function()
-    local es_fade = DC.alpha_push("modal", 0.15)
+imgui.OnFrame(function() return DC.vshow("modal", espl_modal_open, 0.15) end, function()
+    local es_fade = DC.vpush("modal")
     local modal_booking = espl_schedule[espl_modal_time]
     local mc = nil
     if espl_modal_mode == "foreign" then
@@ -4630,8 +5000,8 @@ function DC.cinp_draw(W)
 
 end
 
-DC.color_frame = imgui.OnFrame(function() return DC.color_open and espl_open[0] end, function()
-    local es_fade = DC.alpha_push("color_win", 0.15)
+DC.color_frame = imgui.OnFrame(function() return DC.vshow("color_win", DC.color_open and espl_open[0], 0.15) end, function()
+    local es_fade = DC.vpush("color_win")
     local acc   = hexcol(GREEN_BRIGHT)
     local function A(a) return imgui.ImVec4(acc.x, acc.y, acc.z, a) end
     local muted = DC.tc(0.65, 0.75, 0.65, 1)
@@ -6034,8 +6404,8 @@ sampRegisterChatCommand = function(name, handler)
     end)
 end
 
-imgui.OnFrame(function() return DC.win_open[0] end, function()
-    local es_fade = DC.alpha_push("discord_auth", 0.15)
+imgui.OnFrame(function() return DC.vshow("discord_auth", DC.win_open[0], 0.15) end, function()
+    local es_fade = DC.vpush("discord_auth")
     local acc   = hexcol(GREEN_BRIGHT)
     local function A(a) return imgui.ImVec4(acc.x, acc.y, acc.z, a) end
     local muted = DC.tc(0.65, 0.75, 0.65, 1)
@@ -6480,7 +6850,16 @@ DC.ICON_SPEC.lock         = { names = { "ICON_LOCK" } }
 DC.ICON_SPEC.discord      = { names = { "ICON_BRAND_DISCORD" } }
 DC.ICON_SPEC.folder       = { names = { "ICON_FOLDER" } }
 DC.ICON_SPEC.folder_open  = { names = { "ICON_FOLDER_OPEN", "ICON_FOLDER" } }
+DC.ICON_SPEC.crop         = { names = { "ICON_CROP_1_1", "ICON_SQUARE_ROUNDED", "ICON_SQUARE" } }
+for i = 0, 15 do
+    DC.ICON_SPEC["num" .. i] = { names = { "ICON_NUMBER_" .. i .. "_SMALL" } }
+end
+DC.ICON_SPEC.azakon       = { names = { "ICON_SHIELD_CHECK", "ICON_SHIELD_LOCK", "ICON_SHIELD" } }
+DC.ICON_SPEC.repcars      = { names = { "ICON_CAR", "ICON_TOOLS", "ICON_WRENCH" } }
+DC.ICON_SPEC.cureall      = { names = { "ICON_FIRST_AID_KIT", "ICON_HEART_PLUS", "ICON_MEDICAL_CROSS", "ICON_HEART" } }
+DC.ICON_SPEC.eatall       = { names = { "ICON_BURGER", "ICON_APPLE", "ICON_MEAT", "ICON_TOOLS_KITCHEN_2" } }
 DC.ICON_SPEC.wand         = { names = { "ICON_WAND", "ICON_SPARKLES", "ICON_SEARCH" } }
+DC.ICON_SPEC.tpl_pin     = { names = { "ICON_MAP_PIN", "ICON_MAP_2", "ICON_LOCATION", "ICON_SEARCH" } }
 
 DC.ticon = { font = nil, range = nil, cfg = nil, err = nil }
 
@@ -6742,6 +7121,22 @@ function DC.icon_draw(key, size, col32)
     local p = imgui.GetCursorScreenPos()
     imgui.Dummy(imgui.ImVec2(size, size))
     return DC.icon_put(key, p.x, p.y, size, size, col32)
+end
+
+function DC.clock_draw(size, col)
+    local p = imgui.GetCursorScreenPos()
+    imgui.Dummy(imgui.ImVec2(size, size))
+    local t = os.clock()
+    local i = math.floor(t)
+    local f = t - i
+    f = f * f * (3 - 2 * f)
+    local k1 = "clock" .. (i % 12 + 1)
+    local k2 = "clock" .. ((i + 1) % 12 + 1)
+    local a1 = math.min(1, 2 * (1 - f))
+    local a2 = math.min(1, 2 * f)
+    local w  = col.w or 1
+    DC.icon_put(k1, p.x, p.y, size, size, DC.u32(imgui.ImVec4(col.x, col.y, col.z, w * a1)))
+    DC.icon_put(k2, p.x, p.y, size, size, DC.u32(imgui.ImVec4(col.x, col.y, col.z, w * a2)))
 end
 
 function DC.icon_fit(key, mn, mx, col32)
@@ -7348,7 +7743,7 @@ function DC.ext_anim(...)
     end
 end
 
-DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function()
+DC.tp_frame = imgui.OnFrame(function() return DC.vshow("tp", DC.tp_timer.visible, 0.22) end, function()
     local remaining = 0
     if DC.tp_timer.end_epoch > 0 then
         remaining = math.max(0, DC.tp_timer.end_epoch - os.time())
@@ -7380,11 +7775,11 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
     local EXT = DC.tp_ext
     do
         local dt = math.min(io.DeltaTime, 0.1)
-        if EXT.open then EXT.p = math.min(EXT.p + dt / 0.22, 1)
-        else EXT.p = math.max(EXT.p - dt / 0.22, 0) end
+        if EXT.open then EXT.p = math.min(EXT.p + dt / 0.28, 1)
+        else EXT.p = math.max(EXT.p - dt / 0.28, 0) end
     end
     if not EXT.open and EXT.p <= 0 then EXT.view = "main" end
-    local ext_e = 1 - (1 - EXT.p) ^ 3
+    local ext_e = EXT.p * EXT.p * (3 - 2 * EXT.p)
     imgui.SetNextWindowSize(imgui.ImVec2(WIN_W + math.floor(DC.TP_EXT_W * ext_e + 0.5), 0), imgui.Cond.Always)
 
     imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 14)
@@ -7392,11 +7787,13 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
     imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
     imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(24, 14))
     local tut_alpha_pushed = false
-    if DC.tut.active and DC.tut.fade_win then
-        local ta = math.max(DC.tut_gf(), 0.02)
-        if pcall(imgui.PushStyleVarFloat, imgui.StyleVar.Alpha, ta) then
+    do
+        local ta = 1
+        if DC.tut.active and DC.tut.fade_win then ta = math.max(DC.tut_gf(), 0.02) end
+        local tot = math.max(ta * DC.vfade("tp"), 0.01)
+        if tot < 0.999 and pcall(imgui.PushStyleVarFloat, imgui.StyleVar.Alpha, tot) then
             tut_alpha_pushed = true
-            DC.cur_alpha = ta
+            DC.cur_alpha = tot
         end
     end
     imgui.PushStyleColor(imgui.Col.WindowBg, DC.tc(0.055, 0.075, 0.055, 0.95))
@@ -7408,7 +7805,7 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
     local flags = imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize +
         imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse +
         imgui.WindowFlags.NoSavedSettings + imgui.WindowFlags.NoFocusOnAppearing + imgui.WindowFlags.NoNav
-    if not DC.cursor_unlocked or DC.tut.active then
+    if not DC.cursor_unlocked or DC.tut.active or not DC.tp_timer.visible then
         flags = flags + imgui.WindowFlags.NoInputs
     end
 
@@ -7541,7 +7938,7 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
         local l = u8(label)
         local gap = 6
         local isz = imgui.GetTextLineHeight()
-        local has_icon = icon ~= nil and DC.icon_get(icon) ~= nil
+        local has_icon = icon ~= nil and DC.icon_get(icon == "clockanim" and "clock1" or icon) ~= nil
         local total_w = imgui.CalcTextSize(l).x + gap + imgui.CalcTextSize(value).x
             + (has_icon and (isz + gap / 2) or 0)
         local sx0 = math.floor((WIN_W - total_w) / 2 + 0.5)
@@ -7552,7 +7949,11 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
         imgui.TextColored(white, value)
         if has_icon then
             imgui.SameLine(0, gap / 2)
-            DC.icon_draw(icon, isz, DC.u32(white))
+            if icon == "clockanim" then
+                DC.clock_draw(isz, white)
+            else
+                DC.icon_draw(icon, isz, DC.u32(white))
+            end
         end
     end
 
@@ -7593,7 +7994,7 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
     end
 
     if toast_font then imgui.PushFont(toast_font) end
-    stat_row("Длится:", DC.duration_format(lasts), "clock" .. (math.floor(os.clock()) % 12 + 1))
+    stat_row("Длится:", DC.duration_format(lasts), "clockanim")
     if toast_font then imgui.PopFont() end
 
     imgui.Spacing()
@@ -7734,7 +8135,6 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
             DC.ext_guns(px, top, full, H, padv)
         else
         local R   = DC.row_y or {}
-        local BH  = 30
         local gap = DC.TP_EXT_GAP
         local half = math.floor((full - gap) / 2)
         local muted = DC.tc(0.65, 0.75, 0.65, 1)
@@ -7763,33 +8163,54 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
             return clicked
         end
 
-        fit_text(R.hdr or top, u8("Дополнительно"), muted, toast_font)
+        local hy_top = R.hdr or top
+        fit_text(hy_top, u8("Дополнительно"), muted, toast_font)
 
-        if R.sep and R.hdr then
-            if toast_font then imgui.PushFont(toast_font) end
-            local hl = imgui.GetTextLineHeight()
-            if toast_font then imgui.PopFont() end
-            local ay0, ay1 = R.hdr + hl + 8, R.sep - 8
-            if ay1 - ay0 >= 30 then DC.ext_anim(px, full, ay0, ay1) end
-        end
+        local hl
+        if toast_font then imgui.PushFont(toast_font) end
+        hl = imgui.GetTextLineHeight()
+        if toast_font then imgui.PopFont() end
+        local lh = imgui.GetTextLineHeight()
 
-        if R.sep then
+        local AH  = 10
+        local ay0 = hy_top + hl + 5
+        DC.ext_anim(px, full, ay0, ay0 + AH)
+
+        local sep_y = ay0 + AH + 6
+        do
             local sp = imgui.GetWindowPos()
             imgui.GetWindowDrawList():AddLine(
-                imgui.ImVec2(sp.x + px, sp.y + R.sep), imgui.ImVec2(sp.x + px + full, sp.y + R.sep),
+                imgui.ImVec2(sp.x + px, sp.y + sep_y), imgui.ImVec2(sp.x + px + full, sp.y + sep_y),
                 DC.u32(hexcol(GREEN_MID, 0.30)), 1)
         end
 
-        ext_btn(11, px, R.hp or top, half, BH, "UnArmorAll", "Снять броню со всех.", "/unarmourall 100", "shield_off", imgui.ImVec4(0.30, 0.62, 0.92, 1))
+        local g2      = 5
+        local y_start = sep_y + 8
+        local hint_h  = lh * 2 - 3
+        local avail   = H - padv - y_start - hint_h - 4
+        local BH      = math.max(22, math.min(30, math.floor((avail - g2 * 4) / 5)))
+        local function ry(k) return y_start + k * (BH + g2) end
+
+        ext_btn(11, px, ry(0), half, BH, "UnArmorAll", "Снять броню со всех.", "/unarmourall 100", "shield_off", imgui.ImVec4(0.30, 0.62, 0.92, 1))
         DC.trec("unarmor")
-        ext_btn(12, px + half + gap, R.hp or top, half, BH, "UnWeapAll", "Забрать оружие у всех.", "/weapall 100", nil, imgui.ImVec4(0.95, 0.55, 0.20, 1))
+        ext_btn(12, px + half + gap, ry(0), half, BH, "UnWeapAll", "Забрать оружие у всех.", "/weapall 100", nil, imgui.ImVec4(0.95, 0.55, 0.20, 1))
         DC.trec("unweap")
 
-        if ext_btn(50, px, R.fr or (top + BH + 8), full, BH, "Выдача оружия", "Выдать игрокам оружие.", nil, nil, hexcol(GREEN_BRIGHT)) then
+        if ext_btn(50, px, ry(3), full, BH, "Выдача оружия", "Выдать игрокам оружие.", nil, nil, hexcol(GREEN_BRIGHT)) then
             EXT.view = "guns"
             DC.gun_reset_values()
         end
         DC.trec("guns")
+
+        ext_btn(21, px, ry(1), half, BH, "AZakon", "Выдаёт игнор розыска в радиусе.", "/azakon 100", "azakon", imgui.ImVec4(0.62, 0.45, 0.95, 1))
+        DC.trec("azakon")
+        ext_btn(22, px + half + gap, ry(1), half, BH, "RepCars", "Чинит весь транспорт в радиусе.", "/repcars 100", "repcars", imgui.ImVec4(0.95, 0.75, 0.25, 1))
+        DC.trec("repcars")
+
+        ext_btn(23, px, ry(2), half, BH, "CureAll", "Поднимает всех игроков в радиусе.", "/cureall 100", "cureall", imgui.ImVec4(0.92, 0.35, 0.55, 1))
+        DC.trec("cureall")
+        ext_btn(24, px + half + gap, ry(2), half, BH, "EatAll", "Выдаёт еду игрокам в радиусе.", "/eatall 100", "eatall", imgui.ImVec4(0.55, 0.85, 0.35, 1))
+        DC.trec("eatall")
 
         do
             local m = DC.anti_mode
@@ -7801,7 +8222,7 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
             local tw = imgui.CalcTextSize(label).x
             local k = math.min(1, (full - 12) / math.max(tw, 1))
             if k < 1 then pcall(imgui.SetWindowFontScale, k) end
-            imgui.SetCursorPos(imgui.ImVec2(px, R.win or (top + 2 * (BH + 8))))
+            imgui.SetCursorPos(imgui.ImVec2(px, ry(4)))
             if DC.cbtn("es_ext_btn60", label, imgui.ImVec2(full, BH), nil, c, filled, m == 1 and muted or nil) then
                 DC.anti_cycle()
             end
@@ -7812,9 +8233,9 @@ DC.tp_frame = imgui.OnFrame(function() return DC.tp_timer.visible end, function(
 
         do
             local hc = imgui.ImVec4(1, 1, 1, 0.4)
-            local hy = R.hint or (top + 3 * (BH + 8))
+            local hy = math.min(ry(5) - 2, H - padv - hint_h)
             fit_text(hy, u8("Анти пополнение:"), hc)
-            fit_text(hy + imgui.GetTextLineHeight() - 3, u8("нажми, чтобы сменить режим"), hc)
+            fit_text(hy + lh - 3, u8("нажми, чтобы сменить режим"), hc)
         end
         end
     end
@@ -7930,6 +8351,8 @@ DC.TUT_STEPS = {
       text = "Выдаёт выбранное оружие игрокам рядом." },
     { key = "gun_back", ext = true, view = "guns", title = "Назад",
       text = "Возвращает к остальным кнопкам." },
+    { keys = { "azakon", "repcars", "cureall", "eatall" }, ext = true, title = "Команды в радиусе",
+      text = "AZakon выдаёт игнор розыска, RepCars чинит транспорт, CureAll поднимает игроков, EatAll выдаёт еду. Все команды действуют в радиусе 100." },
     { key = "anti", ext = true, title = "Анти пополнение",
       text = "Следит, не пополнил ли игрок здоровье или броню сам. Можно ничего не делать, наказывать сразу или показывать предупреждение." },
     { key = "hint", title = "Курсор",
@@ -8550,6 +8973,7 @@ end
 function DC.alert_clear()
     DC.alerts      = {}
     DC.alert_shown = {}
+    DC.alert_vis   = {}
     DC.alert_anim.visible = false
     DC.alert_anim.p       = 0
 end
@@ -8579,108 +9003,184 @@ function DC.alert_kick(a)
     end)
 end
 
+DC.alert_vis   = {}
+DC.alert_seq   = 0
+DC.ALERT_ENTER = 0.32
+DC.ALERT_LEAVE = 0.24
+
 DC.alert_frame = imgui.OnFrame(function()
-    return DC.tp_timer.visible and (#DC.alerts > 0 or DC.alert_anim.visible)
+    return DC.tp_timer.visible and (#DC.alerts > 0 or #DC.alert_vis > 0)
 end, function()
     local tp, ts = DC.tp_last_pos, DC.tp_last_size
     if not tp or not ts then return end
 
     local now = os.clock()
+    local dt  = math.min(imgui.GetIO().DeltaTime, 0.1)
     for i = #DC.alerts, 1, -1 do
         if now - DC.alerts[i].t > DC.ALERT_TTL then table.remove(DC.alerts, i) end
     end
 
-    local anim = DC.alert_anim
-    local dt   = math.min(imgui.GetIO().DeltaTime, 0.1)
-    if #DC.alerts > 0 then
-        local copy = {}
-        for i, a in ipairs(DC.alerts) do copy[i] = a end
-        DC.alert_shown = copy
-        anim.visible = true
-        anim.p = math.min(anim.p + dt / DC.ALERT_OPEN, 1)
-    else
-        anim.p = math.max(anim.p - dt / DC.ALERT_CLOSE, 0)
-        if anim.p <= 0 then
-            anim.visible   = false
-            DC.alert_shown = {}
-            return
+    -- синхронизация визуального списка с логическим
+    local vis, live, known = DC.alert_vis, {}, {}
+    for _, a in ipairs(DC.alerts) do live[a] = true end
+    for _, v in ipairs(vis) do
+        known[v.a] = true
+        if not v.leaving and not live[v.a] then
+            v.leaving = true
+            v.t_out   = now
+        end
+    end
+    for _, a in ipairs(DC.alerts) do
+        if not known[a] then
+            DC.alert_seq = DC.alert_seq + 1
+            vis[#vis + 1] = { a = a, id = DC.alert_seq, t_in = now }
         end
     end
 
-    local eased = 1 - (1 - anim.p) ^ 3
-    local slide = DC.alert_h * (1 - eased)
+    local BW, BH, GAP = ts.x - DC.ALERT_INSET * 2, 36, 6
+    local STEP = BH + GAP
+    local MARGIN = 28
+    local anchor_y = tp.y - 6
+    local left_x   = tp.x + DC.ALERT_INSET
 
-    imgui.SetNextWindowPos(
-        imgui.ImVec2(tp.x + DC.ALERT_INSET, tp.y + DC.ALERT_OVERLAP + slide),
-        imgui.Cond.Always, imgui.ImVec2(0, 1))
-    imgui.SetNextWindowSize(imgui.ImVec2(ts.x - DC.ALERT_INSET * 2, 0), imgui.Cond.Always)
+    local n = 0
+    for _, v in ipairs(vis) do if not v.leaving then n = n + 1 end end
 
-    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 14)
-    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 2.0)
-    imgui.PushStyleVarFloat(imgui.StyleVar.FrameRounding, 6)
-    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(16, 12))
-    imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing, imgui.ImVec2(8, 6))
-    imgui.PushStyleColor(imgui.Col.WindowBg, DC.tc(0.055, 0.075, 0.055, 0.95))
-    imgui.PushStyleColor(imgui.Col.Border, hexcol(ESPL_AMBER))
-    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.65, 0.16, 0.16, 1))
-    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.82, 0.22, 0.22, 1))
-    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.95, 0.30, 0.30, 1))
+    imgui.SetNextWindowPos(imgui.ImVec2(left_x - MARGIN, anchor_y + MARGIN), imgui.Cond.Always, imgui.ImVec2(0, 1))
+    imgui.SetNextWindowSize(imgui.ImVec2(BW + MARGIN * 2, DC.ALERT_MAX * STEP + MARGIN), imgui.Cond.Always)
+
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowRounding, 0)
+    imgui.PushStyleVarFloat(imgui.StyleVar.WindowBorderSize, 0)
+    imgui.PushStyleVarVec2(imgui.StyleVar.WindowPadding, imgui.ImVec2(0, 0))
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0, 0, 0, 0))
+    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0, 0, 0, 0))
     imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1, 1, 1, 1))
 
     local flags = imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize +
         imgui.WindowFlags.NoMove + imgui.WindowFlags.NoScrollbar +
         imgui.WindowFlags.NoScrollWithMouse + imgui.WindowFlags.NoSavedSettings +
         imgui.WindowFlags.NoFocusOnAppearing + imgui.WindowFlags.NoNav +
-        imgui.WindowFlags.NoBringToFrontOnFocus
+        imgui.WindowFlags.NoBringToFrontOnFocus + (imgui.WindowFlags.NoBackground or 0)
     if not DC.cursor_unlocked then
         flags = flags + imgui.WindowFlags.NoInputs
     end
 
     imgui.Begin('##es_hp_alert', nil, flags)
 
-    local shown = DC.alert_shown
-    for i, a in ipairs(shown) do
-        local avail = imgui.GetContentRegionAvail().x
-        local head  = a.name .. ":"
-        local body  = u8("Пополнил ") .. DC.alert_what(a)
-        local gap   = 6
-        local total = imgui.CalcTextSize(head).x + gap + imgui.CalcTextSize(body).x
+    local red = imgui.ImVec4(1, 0.45, 0.45, 1)
+    local j, dead = 0, {}
+    for idx, v in ipairs(vis) do
+        local a = v.a
 
-        if total <= avail then
-            imgui.SetCursorPosX(imgui.GetCursorPosX() + (avail - total) / 2)
-            imgui.TextColored(hexcol("FFFF00"), head)
-            imgui.SameLine(0, gap)
-            imgui.Text(body)
+        -- целевая позиция в стопке (низ = самый новый)
+        local target
+        if v.leaving then
+            target = v.oy or 0
         else
-            center_text(head, hexcol("FFFF00"))
-            center_text(body)
+            j = j + 1
+            target = -(n - j + 1) * STEP + GAP
         end
+        if v.oy == nil then v.oy = target else v.oy = DC.damp(v.oy, target, 14, dt) end
 
-        local left = math.max(0, math.ceil(DC.ALERT_TTL - (now - a.t)))
-        local kick_label = u8("Выгнать") .. " (" .. left .. ")"
-        if DC.cbtn("es_kick_" .. a.name, kick_label, imgui.ImVec2(avail, 30), "door_exit", imgui.ImVec4(0.92, 0.30, 0.30, 1), true) then
-            DC.alert_kick(a)
+        -- вход / выход
+        local ep = math.min(math.max((now - v.t_in) / DC.ALERT_ENTER, 0), 1)
+        ep = 1 - (1 - ep) ^ 3
+        local xp = 0
+        if v.leaving then
+            xp = math.min(math.max((now - v.t_out) / DC.ALERT_LEAVE, 0), 1)
+            if xp >= 1 then dead[#dead + 1] = idx end
+            xp = xp * xp
         end
+        local alpha = math.max(ep * (1 - xp), 0)
 
-        if i < #shown then
-            imgui.Spacing()
-            imgui.Separator()
-            imgui.Spacing()
+        if alpha > 0.003 then
+            local ix = left_x + 26 * xp
+            local iy = anchor_y + v.oy + 14 * (1 - ep)
+
+            imgui.SetCursorScreenPos(imgui.ImVec2(ix, iy))
+            local clicked, hov = false, false
+            if v.leaving then
+                imgui.Dummy(imgui.ImVec2(BW, BH))
+            else
+                clicked = imgui.InvisibleButton("##es_kick_" .. v.id, imgui.ImVec2(BW, BH))
+                hov = imgui.IsItemHovered()
+                DC.tip("kick", u8("Выгнать игрока: спавн и сообщение в ЛС."))
+            end
+            v.hov = DC.damp(v.hov or 0, hov and 1 or 0, 16, dt)
+            local hv = v.hov
+
+            DC.cur_alpha = alpha
+            local mn = imgui.ImVec2(ix, iy)
+            local mx = imgui.ImVec2(ix + BW, iy + BH)
+            local dl = imgui.GetWindowDrawList()
+            local R  = BH / 2
+
+            local age    = now - a.t
+            local target_f = math.max(0, math.min(1, 1 - age / DC.ALERT_TTL))
+            v.frac = v.frac and DC.damp(v.frac, target_f, 14, dt) or target_f
+            local left = math.max(0, math.ceil(DC.ALERT_TTL - age))
+
+            dl:AddRectFilled(mn, mx, DC.u32(imgui.ImVec4(0.07, 0.04, 0.04, 0.92 + 0.05 * hv)), R)
+            if v.frac > 0.01 then
+                dl:PushClipRect(mn, imgui.ImVec2(mn.x + BW * v.frac, mx.y), true)
+                dl:AddRectFilled(mn, mx, DC.u32(imgui.ImVec4(0.85, 0.22, 0.22, 0.28 + 0.14 * hv)), R)
+                dl:PopClipRect()
+            end
+            dl:AddRect(mn, mx, DC.u32(imgui.ImVec4(0.92, 0.30, 0.30, 0.75 + 0.25 * hv)), R, 15, 1.5)
+
+            local ty  = iy + (BH - imgui.GetTextLineHeight()) / 2
+            local isz = 18
+            local x   = ix + 14
+            if not DC.icon_put("door_exit", x, iy + (BH - isz) / 2, isz, isz, DC.u32(red)) then
+                dl:AddText(imgui.ImVec2(x + 4, ty), DC.u32(red), "x")
+            end
+            x = x + isz + 8
+
+            local bsz = 26
+            local nx  = mx.x - 12 - bsz
+            local by  = iy + (BH - bsz) / 2
+            DC.icon_put("crop", nx, by, bsz, bsz, DC.u32(imgui.ImVec4(1, 1, 1, 0.55)))
+            if not DC.icon_put("num" .. math.min(left, 15), nx, by, bsz, bsz, DC.u32(imgui.ImVec4(1, 1, 1, 0.55))) then
+                local ns = tostring(left)
+                local nw = imgui.CalcTextSize(ns).x
+                dl:AddText(imgui.ImVec2(nx + (bsz - nw) / 2, ty), DC.u32(imgui.ImVec4(1, 1, 1, 0.55)), ns)
+            end
+
+            local what, wc
+            if a.hp and a.armor then what, wc = u8("здоровье + броня"), hexcol(ESPL_AMBER)
+            elseif a.hp then what, wc = u8("здоровье"), imgui.ImVec4(0.45, 0.92, 0.50, 1)
+            else what, wc = u8("броня"), imgui.ImVec4(0.45, 0.70, 1, 1) end
+            local ww    = imgui.CalcTextSize(what).x
+            local avail = nx - 12 - x
+            local nick  = espl_truncate_to_width(a.name, math.max(avail - ww - 10, 40))
+            dl:AddText(imgui.ImVec2(x, ty), DC.u32(hexcol("FFFF00")), nick)
+            dl:AddText(imgui.ImVec2(x + imgui.CalcTextSize(nick).x + 10, ty), DC.u32(wc), what)
+
+            DC.cur_alpha = 1
+            if clicked then DC.alert_kick(a) end
         end
     end
 
-    imgui.Dummy(imgui.ImVec2(0, DC.ALERT_OVERLAP))
-
-    local aws = imgui.GetWindowSize()
-    DC.alert_h = aws.y
+    for k = #dead, 1, -1 do table.remove(vis, dead[k]) end
+    DC.alert_anim.visible = #vis > 0
 
     imgui.End()
 
-    imgui.PopStyleColor(6)
-    imgui.PopStyleVar(5)
+    imgui.PopStyleColor(3)
+    imgui.PopStyleVar(3)
+    DC.cur_alpha = 1
 end)
 DC.alert_frame.HideCursor = true
-DC.WINNER_SUM = 50
+DC.WINNER_SUM      = 50
+DC.WINNER_SUM_BIG  = 150
+DC.WINNER_BIG_FROM = 20
+
+function DC.winner_sum()
+    if (DC.people_max or 0) > DC.WINNER_BIG_FROM then
+        return DC.WINNER_SUM_BIG
+    end
+    return DC.WINNER_SUM
+end
 DC.test_mode  = false
 
 DC.winner = {
@@ -8707,6 +9207,7 @@ end
 
 function DC.winner_submit()
     local w = DC.winner
+    if not w.open then return end
     DC.trace('winner_submit: begin')
 
     local title = ffi.string(w.title_buf):gsub("^%s+", ""):gsub("%s+$", "")
@@ -8726,7 +9227,7 @@ function DC.winner_submit()
         return
     end
 
-    local sum = DC.WINNER_SUM
+    local sum = DC.winner_sum()
 
     local name = sampGetPlayerNickname(id)
     if not name or name == "" then
@@ -8780,9 +9281,9 @@ function DC.winner_loop()
 end
 
 DC.winner_frame = imgui.OnFrame(function()
-    return DC.winner.open and DC.tp_timer.visible
+    return DC.vshow("winner", DC.winner.open and DC.tp_timer.visible, 0.15)
 end, function()
-    local es_fade = DC.alpha_push("winner", 0.15)
+    local es_fade = DC.vpush("winner")
     local w = DC.winner
 
     local acc   = hexcol(GREEN_BRIGHT)
@@ -8869,7 +9370,7 @@ end, function()
     end
 
     do
-        local t1, t2 = u8("Победитель"), DC.WINNER_SUM .. u8("КК")
+        local t1, t2 = u8("Победитель"), DC.winner_sum() .. u8("КК")
         local gap_c = 8
         imgui.SetCursorPosX(x0 + math.max((W - (chip_w("trophy", t1) + gap_c + chip_w("coin", t2))) / 2, 0))
         chip("trophy", t1)
@@ -10178,7 +10679,9 @@ function DC.remind_start()
 end
 
 function DC.esc_close_top()
-    if espl_modal_open then
+    if DC.tpl.open then
+        DC.tpl.open = false
+    elseif espl_modal_open then
         espl_modal_open = false
     elseif DC.color_open then
         DC.color_open = false
@@ -10568,6 +11071,9 @@ function main()
         espl_open[0] = true
         DC.espl_trace_left = 6
         DC.trace("esp: window opened")
+        DC.tpl.open = false
+        DC.tpl.p = 0
+        DC.tpl_load()
 
         DC.esp_start_polling(espl_selected_date)
         DC.trace("esp: polling started")
