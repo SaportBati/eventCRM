@@ -378,7 +378,7 @@ local WORKER_URL_FALLBACK = "https://nehto--9aade89ea49811f1a9051607ee4eb77e.web
 local active_worker_url = WORKER_URL_PRIMARY
 local SCAN_RADIUS  = 200.0
 
-local SCRIPT_VERSION      = "2.1"
+local SCRIPT_VERSION      = "2.2"
 local VERSION_CHECK_URL   = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/version.txt"
 local UPDATE_DOWNLOAD_URL = "https://raw.githubusercontent.com/SaportBati/eventCRM/refs/heads/main/event.lua"
 
@@ -9172,8 +9172,8 @@ end, function()
 end)
 DC.alert_frame.HideCursor = true
 DC.WINNER_SUM      = 50
-DC.WINNER_SUM_BIG  = 150
-DC.WINNER_BIG_FROM = 20
+DC.WINNER_SUM_BIG  = 100
+DC.WINNER_BIG_FROM = 30
 
 function DC.winner_sum()
     if (DC.people_max or 0) > DC.WINNER_BIG_FROM then
